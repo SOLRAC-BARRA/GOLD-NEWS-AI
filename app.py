@@ -49,32 +49,22 @@ else:
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
 
-        # Usar explícitamente el modelo requerido por Google API en 2026
-        target_model = "gemini-3.6-flash"
+        # Probar únicamente el identificador oficial requerido
+        modelos = ["gemini-3.6-flash", "models/gemini-3.6-flash"]
+        
+        for mod in modelos:
+            try:
+                model = genai.GenerativeModel(mod)
+                response = model.generate_content(
+                    prompt_text,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                if response and response.text:
+                    return response.text
+            except Exception:
+                continue
 
-        try:
-            model = genai.GenerativeModel(target_model)
-            response = model.generate_content(
-                prompt_text,
-                generation_config={"response_mime_type": "application/json"},
-            )
-            if response and response.text:
-                return response.text
-        except Exception:
-            # Respaldo dinámico si la API tiene asignado otro nombre interno
-            for m in genai.list_models():
-                if "generateContent" in m.supported_generation_methods:
-                    model = genai.GenerativeModel(m.name)
-                    response = model.generate_content(
-                        prompt_text,
-                        generation_config={
-                            "response_mime_type": "application/json"
-                        },
-                    )
-                    if response and response.text:
-                        return response.text
-
-        raise Exception("No se pudo obtener respuesta del modelo de la API.")
+        raise Exception("No se pudo conectar con el modelo gemini-3.6-flash.")
 
     # Cargar datos
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
@@ -133,7 +123,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
 
-    Responde en formato JSON estrictamente válido con esta estructura:
+    Responde en formato JSON strictly válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
@@ -158,12 +148,10 @@ else:
         try:
             raw_response = consultar_gemini(prompt, api_key)
 
-            # Limpiar posibles envoltorios markdown
             match = re.search(r"\{.*\}", raw_response, re.DOTALL)
             json_str = match.group(0) if match else raw_response
             data = json.loads(json_str)
 
-            # Renderizado del velocímetro
             score = data["score_global"]
             estado = data["estado"]
 
@@ -191,7 +179,6 @@ else:
             fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-            # Desglose de factores
             st.subheader("📊 Factores Clave (Macro & Técnico)")
             for factor, valor in data["factores"].items():
                 st.write(f"**{factor}:** {valor}/100")
@@ -199,7 +186,6 @@ else:
 
             st.divider()
 
-            # Titulares
             st.subheader("Últimos titulares procesados (24h)")
             for item in data["noticias"]:
                 st.markdown(f"### {item['titulo']}")
@@ -207,6 +193,3 @@ else:
                 st.write(f"- **Explicación:** {item['explicacion']}")
                 st.markdown(f"- [Leer noticia original]({item['url']})")
                 st.write("---")
-
-        except Exception as e:
-            st.error(f"Error procesando la información con la IA: {e}")
