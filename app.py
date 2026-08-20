@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🥇 Radar Macro & Técnico XAU/USD")
-st.caption("Noticias en vivo (24h)")
+st.caption("Noticias en vivo (24h) + DXY + Bonos a 2 Años (US02Y) + RSI/Momentum")
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -44,26 +44,49 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- CONSULTA A GEMINI (Caché de 30 minutos = 1800s) ---
+    # --- CONSULTA A GEMINI (Detección dinámica + Caché de 30 min) ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        
-        # Sistema de fallback automático entre modelos
-        modelos = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
-        for mod in modelos:
+
+        modelos_candidatos = [
+            "gemini-2.5-flash",
+            "gemini-3.6-flash",
+            "gemini-2.5-pro",
+        ]
+
+        # Intentar obtener la lista real de modelos que soporta tu API Key
+        try:
+            modelos_api = [
+                m.name.replace("models/", "")
+                for m in genai.list_models()
+                if "generateContent" in m.supported_generation_methods
+            ]
+            if modelos_api:
+                # Priorizar modelos "flash"
+                flash_models = [m for m in modelos_api if "flash" in m]
+                modelos_candidatos = flash_models + modelos_api + modelos_candidatos
+        except Exception:
+            pass
+
+        # Eliminar duplicados manteniendo el orden
+        modelos_unicos = list(dict.fromkeys(modelos_candidatos))
+
+        ultimo_error = ""
+        for mod in modelos_unicos:
             try:
                 model = genai.GenerativeModel(mod)
                 response = model.generate_content(
                     prompt_text,
-                    generation_config={"response_mime_type": "application/json"}
+                    generation_config={"response_mime_type": "application/json"},
                 )
                 if response and response.text:
                     return response.text
-            except Exception:
+            except Exception as e:
+                ultimo_error = str(e)
                 continue
-                
-        raise Exception("No se pudo obtener respuesta de la API de Gemini.")
+
+        raise Exception(f"Ningún modelo respondió. Último detalle: {ultimo_error}")
 
     # Cargar datos de mercado
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
@@ -92,7 +115,7 @@ else:
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
-    # Botón para forzar actualización manual (Limpia el caché)
+    # Botón para forzar actualización manual
     if st.button("🔄 Actualizar Análisis"):
         st.cache_data.clear()
         st.rerun()
