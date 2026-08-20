@@ -22,25 +22,32 @@ else:
         st.rerun()
 
     st.subheader("Últimos titulares procesados")
+
+    # Extraemos los 5 mejores titulares
+    noticias = feed.entries[:5]
     
-    for entry in feed.entries[:6]:
-        titular = entry.title
-        link = entry.link
-        
-        prompt = f"""
-        Eres un analista macroeconómico experto en trading de XAU/USD.
-        Analiza este titular: '{titular}'
-        
-        Responde strictly en este formato breve en español:
-        - **Sesgo:** [Alcista 🟢 / Bajista 🔴 / Neutral ⚪]
-        - **Explicación:** (1 sola frase explicando la relación entre la noticia, el DXY y el Oro)
-        """
-        
+    # Construimos un único bloque de texto con todas las noticias
+    texto_titulares = ""
+    for i, entry in enumerate(noticias, 1):
+        texto_titulares += f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
+
+    prompt = f"""
+    Eres un analista macroeconómico experto en trading de XAU/USD (Oro).
+    Analiza la siguiente lista de titulares de noticias:
+
+    {texto_titulares}
+
+    Para CADA titular de la lista, genera un análisis breve con este formato exactamente:
+    ### [Número]. [Título de la noticia en español]
+    - **Sesgo:** [Alcista 🟢 / Bajista 🔴 / Neutral ⚪]
+    - **Explicación:** (1 sola frase explicando el impacto en el Oro y el DXY)
+    - [Leer noticia original](URL correspondiente)
+    ---
+    """
+
+    with st.spinner("Analizando mercado con IA..."):
         try:
             response = model.generate_content(prompt)
-            
-            with st.expander(f"📌 {titular}"):
-                st.write(response.text)
-                st.markdown(f"[Leer noticia original]({link})")
+            st.markdown(response.text)
         except Exception as e:
-            st.error(f"Error al analizar la noticia: {e}")
+            st.error(f"Error al analizar las noticias: {e}")
