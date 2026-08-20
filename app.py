@@ -13,7 +13,7 @@ if not api_key:
     st.info("👈 Por favor, ingresa tu API Key en la barra lateral para empezar.")
 else:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-3.6-flash')
 
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+Fed+inflation&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
