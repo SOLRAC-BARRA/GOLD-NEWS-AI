@@ -44,40 +44,14 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- CONSULTA A GEMINI CON AUTODETECCIÓN ---
-    @st.cache_data(ttl=1800)
+    # --- CONSULTA A GEMINI ---
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-
-        # Buscar modelos disponibles activados en la clave
-        modelos_disponibles = []
-        try:
-            for m in genai.list_models():
-                if "generateContent" in m.supported_generation_methods:
-                    modelos_disponibles.append(m.name)
-        except Exception as e:
-            raise Exception(f"La API Key no tiene la API activada en Google Cloud: {e}")
-
-        if not modelos_disponibles:
-            raise Exception("No se encontraron modelos disponibles para esta clave API.")
-
-        # Seleccionar el primer modelo disponible (dando preferencia a flash)
-        modelo_elegido = modelos_disponibles[0]
-        for m in modelos_disponibles:
-            if "flash" in m:
-                modelo_elegido = m
-                break
-
-        model = genai.GenerativeModel(modelo_elegido)
-        
-        try:
-            response = model.generate_content(
-                prompt_text,
-                generation_config={"response_mime_type": "application/json"}
-            )
-        except Exception:
-            response = model.generate_content(prompt_text)
-
+        model = genai.GenerativeModel("gemini-3.6-flash")
+        response = model.generate_content(
+            prompt_text,
+            generation_config={"response_mime_type": "application/json"}
+        )
         return response.text
 
     # Cargar datos
