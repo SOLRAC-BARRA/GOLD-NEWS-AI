@@ -193,3 +193,6 @@ else:
                 st.write(f"- **Explicación:** {item['explicacion']}")
                 st.markdown(f"- [Leer noticia original]({item['url']})")
                 st.write("---")
+
+        except Exception as e:
+            st.error(f"Error procesando la información con la IA: {e}")
