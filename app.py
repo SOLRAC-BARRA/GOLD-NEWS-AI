@@ -48,25 +48,12 @@ else:
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-
-        modelos = ["gemini-1.5-flash", "gemini-1.5-pro"]
-        
-        for mod in modelos:
-            try:
-                model = genai.GenerativeModel(mod)
-                response = model.generate_content(
-                    prompt_text,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                if response and response.text:
-                    return response.text
-            except Exception:
-                continue
-
-        raise Exception(
-            "La API Key no tiene permisos para usar Gemini. "
-            "Asegúrate de haber activado la 'Generative Language API' en tu Google Cloud Console."
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(
+            prompt_text,
+            generation_config={"response_mime_type": "application/json"},
         )
+        return response.text
 
     # Cargar datos
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
@@ -146,7 +133,7 @@ else:
     }}
     """
 
-    with st.spinner("Procesando datos con Gemini..."):
+    with st.spinner("Procesando datos con IA..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
 
