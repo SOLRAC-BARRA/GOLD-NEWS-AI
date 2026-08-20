@@ -46,13 +46,30 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- FUNCIÓN CONSULTA IA (MODELO VÁLIDO GEMINI-3.6-FLASH) ---
+    # --- FUNCIÓN CONSULTA IA CON DETECCIÓN DINÁMICA DE MODELOS ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        modelos = ["gemini-3.6-flash", "gemini-2.0-flash"]
+
+        # Detectar dinámicamente qué modelos admite la clave ingresada
+        modelos_candidatos = []
+        try:
+            for m in genai.list_models():
+                if "generateContent" in m.supported_generation_methods:
+                    modelos_candidatos.append(m.name)
+        except Exception:
+            pass
+
+        # Si no detecta automáticos, añade respaldos universales
+        if not modelos_candidatos:
+            modelos_candidatos = [
+                "gemini-1.5-flash",
+                "gemini-1.5-pro",
+                "models/gemini-1.5-flash",
+            ]
+
         ultimo_error = None
-        for mod in modelos:
+        for mod in modelos_candidatos:
             try:
                 model = genai.GenerativeModel(mod)
                 response = model.generate_content(prompt_text)
@@ -61,6 +78,7 @@ else:
             except Exception as e:
                 ultimo_error = e
                 continue
+
         raise Exception(f"{ultimo_error}")
 
     # Obtener datos de mercado
@@ -195,4 +213,4 @@ else:
                 st.write("---")
 
         except Exception as e:
-            st.error(f"Error al procesar los datos con la IA: {e}")
+            st.error(f"Error al conectar con la API de Google Gemini: {e}")
