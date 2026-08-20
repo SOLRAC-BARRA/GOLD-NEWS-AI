@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🥇 Radar Macro & Técnico XAU/USD")
-st.caption("Noticias en vivo (24h)")
+st.caption("Noticias en vivo (24h) + DXY + Bonos a 2 Años (US02Y) + RSI/Momentum")
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -19,7 +19,7 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- DATOS DE MERCADO CON CACHÉ ---
+    # --- FUNCIÓN CON CACHÉ PARA MERCADOS ---
     @st.cache_data(ttl=600)
     def obtener_datos_mercado(ticker_symbol):
         try:
@@ -31,11 +31,13 @@ else:
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
                 rs = gain / loss
                 df["RSI"] = 100 - (100 / (1 + rs))
+
                 df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
                 precio_actual = float(df["Close"].iloc[-1])
                 precio_previo = float(df["Close"].iloc[-2])
                 var_pct = ((precio_actual - precio_previo) / precio_previo) * 100
+
                 rsi_val = float(df["RSI"].iloc[-1])
                 mom_val = float(df["Momentum"].iloc[-1])
 
@@ -44,34 +46,46 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- CONSULTA A GEMINI ---
+    # --- FUNCIÓN CONSULTA IA (Sin respaldo sintético) ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.6-flash"]
+        modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        ultimo_error = None
         for mod in modelos:
             try:
-                m = genai.GenerativeModel(mod)
-                res = m.generate_content(prompt_text)
-                return res.text
-            except Exception:
+                model = genai.GenerativeModel(mod)
+                response = model.generate_content(prompt_text)
+                return response.text
+            except Exception as e:
+                ultimo_error = e
                 continue
-        return None
+        raise Exception(f"{ultimo_error}")
 
-    # Obtener DXY y US02Y
+    # Obtener datos de mercado
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
 
-    # Métricas superiores
+    # --- MÉTRICAS VISUALES EN CABECERA ---
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("DXY (Dólar)", f"{dxy_precio:.2f}", f"{dxy_var:.2f}%", delta_color="inverse")
+        st.metric(
+            "DXY (Dólar)",
+            f"{dxy_precio:.2f}",
+            f"{dxy_var:.2f}%",
+            delta_color="inverse",
+        )
         st.caption(f"RSI(14): **{dxy_rsi:.1f}** | Momentum: **{dxy_mom:.2f}**")
     with col2:
-        st.metric("US02Y (Bono 2 Años)", f"{us02_precio:.2f}%", f"{us02_var:.2f}%", delta_color="inverse")
+        st.metric(
+            "US02Y (Bono 2 Años)",
+            f"{us02_precio:.2f}%",
+            f"{us02_var:.2f}%",
+            delta_color="inverse",
+        )
         st.caption(f"RSI(14): **{us02_rsi:.1f}** | Momentum: **{us02_mom:.2f}**")
 
-    # Noticias
+    # --- NOTICIAS RSS MÁS RECIENTES (24H) ---
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
@@ -79,20 +93,33 @@ else:
         st.cache_data.clear()
         st.rerun()
 
-    noticias_ordenadas = sorted(feed.entries, key=lambda x: getattr(x, "published_parsed", 0), reverse=True)
+    noticias_ordenadas = sorted(
+        feed.entries,
+        key=lambda x: getattr(x, "published_parsed", 0),
+        reverse=True,
+    )
     noticias = noticias_ordenadas[:5]
 
     texto_titulares = ""
     for i, entry in enumerate(noticias, 1):
-        texto_titulares += f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
+        texto_titulares += (
+            f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
+        )
 
     prompt = f"""
     Eres un analista macroeconómico y técnico senior de XAU/USD (Oro).
-    DXY: {dxy_precio:.2f} | Var: {dxy_var:.2f}% | RSI: {dxy_rsi:.1f}
-    US02Y: {us02_precio:.2f}% | Var: {us02_var:.2f}% | RSI: {us02_rsi:.1f}
-    Noticias: {texto_titulares}
 
-    Responde EXCLUSIVAMENTE en JSON válido:
+    DATOS EN VIVO DEL MERCADO:
+    1. DXY (Dólar): Cotización = {dxy_precio:.2f} | Var = {dxy_var:.2f}% | RSI(14) = {dxy_rsi:.1f} | Momentum = {dxy_mom:.2f}
+    2. US02Y (Bono 2 años): Rendimiento = {us02_precio:.2f}% | Var = {us02_var:.2f}% | RSI(14) = {us02_rsi:.1f} | Momentum = {us02_mom:.2f}
+
+    NOTICIAS MACRO RECIENTES (Últimas 24h):
+    {texto_titulares}
+
+    ANÁLISIS REQUERIDO:
+    Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
+
+    Responde EXCLUSIVAMENTE en formato JSON válido (sin etiquetas markdown ```json) con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
@@ -106,86 +133,65 @@ else:
             {{
                 "titulo": "Título traducido al español",
                 "sesgo": "Alcista 🟢",
-                "explicacion": "Explicación breve.",
+                "explicacion": "Explicación breve de 1 frase.",
                 "url": "URL original"
             }}
         ]
     }}
     """
 
-    data = None
-    raw_response = consultar_gemini(prompt, api_key)
-
-    if raw_response:
+    with st.spinner("Procesando datos con IA..."):
         try:
-            clean_json = raw_response.replace("```json", "").replace("```", "").strip()
+            raw_response = consultar_gemini(prompt, api_key)
+            clean_json = (
+                raw_response.replace("```json", "").replace("```", "").strip()
+            )
             data = json.loads(clean_json)
-        except Exception:
-            data = None
 
-    # --- ALGORITMO TÉCNICO DE RESPALDO (Si la API se agota) ---
-    if not data:
-        score_dxy = max(10, min(90, int(50 - (dxy_var * 25) + (50 - dxy_rsi) * 0.5)))
-        score_bono = max(10, min(90, int(50 - (us02_var * 25) + (50 - us02_rsi) * 0.5)))
-        score_global = int((score_dxy + score_bono) / 2)
-        estado = "Fortaleza Alcista" if score_global > 60 else ("Debilidad Bajista" if score_global < 40 else "Rango Neutral")
+            # --- DIBUJAR TERMÓMETRO ---
+            score = data["score_global"]
+            estado = data["estado"]
 
-        noticias_parsed = []
-        for item in noticias:
-            noticias_parsed.append({
-                "titulo": item.title,
-                "sesgo": "Neutral ⚪",
-                "explicacion": "Titular procesado en directo. (Análisis detallado en renovación de cuota IA).",
-                "url": item.link
-            })
+            fig = go.Figure(
+                go.Indicator(
+                    mode="gauge+number",
+                    value=score,
+                    title={
+                        "text": (
+                            "<b>Sentimiento Combinado Macro + Técnico"
+                            f" XAU/USD</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"
+                        )
+                    },
+                    gauge={
+                        "axis": {"range": [0, 100]},
+                        "bar": {"color": "#FFFFFF"},
+                        "steps": [
+                            {"range": [0, 35], "color": "#FF4B4B"},
+                            {"range": [35, 65], "color": "#FFA500"},
+                            {"range": [65, 100], "color": "#00CC96"},
+                        ],
+                    },
+                )
+            )
+            fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig, use_container_width=True)
 
-        data = {
-            "score_global": score_global,
-            "estado": estado,
-            "factores": {
-                "Presión DXY (Dólar + RSI)": score_dxy,
-                "Rendimiento Bono 2Y (Fed)": score_bono,
-                "Demanda Refugio Seguro": 50,
-                "Presión Inflacionaria": 50
-            },
-            "noticias": noticias_parsed
-        }
-        st.info("ℹ️ Mostrando análisis con **Motor Técnico de Respaldo** (Sin consumo de cuota IA).")
+            # --- DESGLOSE DE FACTORES ---
+            st.subheader("📊 Factores Clave (Macro & Técnico)")
+            for factor, valor in data["factores"].items():
+                st.write(f"**{factor}:** {valor}/100")
+                st.progress(valor / 100)
 
-    # --- DIBUJAR TERMÓMETRO Y RESULTADOS ---
-    score = data["score_global"]
-    estado = data["estado"]
+            st.divider()
 
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=score,
-            title={"text": f"<b>Sentimiento XAU/USD</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"},
-            gauge={
-                "axis": {"range": [0, 100]},
-                "bar": {"color": "#FFFFFF"},
-                "steps": [
-                    {"range": [0, 35], "color": "#FF4B4B"},
-                    {"range": [35, 65], "color": "#FFA500"},
-                    {"range": [65, 100], "color": "#00CC96"},
-                ],
-            },
-        )
-    )
-    fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+            # --- LISTA DE NOTICIAS ---
+            st.subheader("Últimos titulares procesados (24h)")
+            for item in data["noticias"]:
+                st.markdown(f"### {item['titulo']}")
+                st.write(f"- **Sesgo:** {item['sesgo']}")
+                st.write(f"- **Explicación:** {item['explicacion']}")
+                st.markdown(f"- [Leer noticia original]({item['url']})")
+                st.write("---")
 
-    st.subheader("📊 Factores Clave")
-    for factor, valor in data["factores"].items():
-        st.write(f"**{factor}:** {valor}/100")
-        st.progress(valor / 100)
-
-    st.divider()
-
-    st.subheader("Últimos titulares procesados (24h)")
-    for item in data["noticias"]:
-        st.markdown(f"### {item['titulo']}")
-        st.write(f"- **Sesgo:** {item['sesgo']}")
-        st.write(f"- **Explicación:** {item['explicacion']}")
-        st.markdown(f"- [Leer noticia original]({item['url']})")
-        st.write("---")
+        except Exception as e:
+            st.error(f"Error al procesar los datos con la IA: {e}")
