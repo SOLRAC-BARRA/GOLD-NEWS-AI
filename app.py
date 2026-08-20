@@ -2,7 +2,6 @@ import json
 import re
 import feedparser
 import google.generativeai as genai
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
@@ -20,7 +19,7 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- FUNCIÓN CON CACHÉ PARA MERCADOS ---
+    # --- DATOS DE MERCADO ---
     @st.cache_data(ttl=600)
     def obtener_datos_mercado(ticker_symbol):
         try:
@@ -32,13 +31,11 @@ else:
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
                 rs = gain / loss
                 df["RSI"] = 100 - (100 / (1 + rs))
-
                 df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
                 precio_actual = float(df["Close"].iloc[-1])
                 precio_previo = float(df["Close"].iloc[-2])
                 var_pct = ((precio_actual - precio_previo) / precio_previo) * 100
-
                 rsi_val = float(df["RSI"].iloc[-1])
                 mom_val = float(df["Momentum"].iloc[-1])
 
@@ -47,47 +44,43 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- FUNCIÓN CONSULTA IA (FORZANDO MODO JSON) ---
+    # --- CONSULTA A GEMINI 3.6 FLASH ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
 
-        modelos = ["gemini-1.5-flash", "gemini-1.5-pro"]
-        gen_config = genai.types.GenerationConfig(
-            response_mime_type="application/json"
-        )
+        # Usar explícitamente el modelo requerido por Google API en 2026
+        target_model = "gemini-3.6-flash"
 
-        ultimo_error = None
+        try:
+            model = genai.GenerativeModel(target_model)
+            response = model.generate_content(
+                prompt_text,
+                generation_config={"response_mime_type": "application/json"},
+            )
+            if response and response.text:
+                return response.text
+        except Exception:
+            # Respaldo dinámico si la API tiene asignado otro nombre interno
+            for m in genai.list_models():
+                if "generateContent" in m.supported_generation_methods:
+                    model = genai.GenerativeModel(m.name)
+                    response = model.generate_content(
+                        prompt_text,
+                        generation_config={
+                            "response_mime_type": "application/json"
+                        },
+                    )
+                    if response and response.text:
+                        return response.text
 
-        # Intentar con modo JSON estricto
-        for mod in modelos:
-            try:
-                model = genai.GenerativeModel(mod, generation_config=gen_config)
-                response = model.generate_content(prompt_text)
-                if response and response.text:
-                    return response.text
-            except Exception as e:
-                ultimo_error = e
-                continue
+        raise Exception("No se pudo obtener respuesta del modelo de la API.")
 
-        # Reintento estándar si la versión no soporta mime_type
-        for mod in modelos:
-            try:
-                model = genai.GenerativeModel(mod)
-                response = model.generate_content(prompt_text)
-                if response and response.text:
-                    return response.text
-            except Exception as e:
-                ultimo_error = e
-                continue
-
-        raise Exception(f"{ultimo_error}")
-
-    # Obtener datos de mercado
+    # Cargar datos
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
 
-    # --- MÉTRICAS VISUALES EN CABECERA ---
+    # Métrica visual superior
     col1, col2 = st.columns(2)
     with col1:
         st.metric(
@@ -106,7 +99,7 @@ else:
         )
         st.caption(f"RSI(14): **{us02_rsi:.1f}** | Momentum: **{us02_mom:.2f}**")
 
-    # --- NOTICIAS RSS MÁS RECIENTES (24H) ---
+    # Obtener Noticias
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
@@ -140,7 +133,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
 
-    Responde EXCLUSIVAMENTE con un objeto JSON válido estructurado como este ejemplo:
+    Responde en formato JSON estrictamente válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
@@ -161,19 +154,16 @@ else:
     }}
     """
 
-    with st.spinner("Procesando datos con IA..."):
+    with st.spinner("Procesando datos con Gemini 3.6..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
 
-            # Extracción robusta de JSON con expresiones regulares
+            # Limpiar posibles envoltorios markdown
             match = re.search(r"\{.*\}", raw_response, re.DOTALL)
-            if match:
-                clean_json = match.group(0)
-                data = json.loads(clean_json)
-            else:
-                raise ValueError("La respuesta de la IA no contenía un JSON válido.")
+            json_str = match.group(0) if match else raw_response
+            data = json.loads(json_str)
 
-            # --- DIBUJAR TERMÓMETRO ---
+            # Renderizado del velocímetro
             score = data["score_global"]
             estado = data["estado"]
 
@@ -201,7 +191,7 @@ else:
             fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- DESGLOSE DE FACTORES ---
+            # Desglose de factores
             st.subheader("📊 Factores Clave (Macro & Técnico)")
             for factor, valor in data["factores"].items():
                 st.write(f"**{factor}:** {valor}/100")
@@ -209,7 +199,7 @@ else:
 
             st.divider()
 
-            # --- LISTA DE NOTICIAS ---
+            # Titulares
             st.subheader("Últimos titulares procesados (24h)")
             for item in data["noticias"]:
                 st.markdown(f"### {item['titulo']}")
@@ -219,4 +209,4 @@ else:
                 st.write("---")
 
         except Exception as e:
-            st.error(f"Error al procesar la respuesta de la IA: {e}")
+            st.error(f"Error procesando la información con la IA: {e}")
