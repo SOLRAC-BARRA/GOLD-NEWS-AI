@@ -19,21 +19,19 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- FUNCIÓN CON CACHÉ PARA MERCADOS (guarda datos 5 min) ---
-    @st.cache_data(ttl=300)
+    # --- FUNCIÓN CON CACHÉ PARA MERCADOS (guarda datos 10 min) ---
+    @st.cache_data(ttl=600)
     def obtener_datos_mercado(ticker_symbol):
         try:
             ticker = yf.Ticker(ticker_symbol)
             df = ticker.history(period="1mo")
             if len(df) >= 15:
-                # RSI 14
                 delta = df["Close"].diff()
                 gain = delta.where(delta > 0, 0).rolling(14).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
                 rs = gain / loss
                 df["RSI"] = 100 - (100 / (1 + rs))
 
-                # Momentum 14
                 df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
                 precio_actual = float(df["Close"].iloc[-1])
@@ -48,13 +46,26 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- FUNCIÓN CON CACHÉ PARA LA IA (guarda respuesta 10 min) ---
-    @st.cache_data(ttl=600)
+    # --- FUNCIÓN CON FALLBACK DE MODELOS Y CACHÉ AMIGABLE (30 min) ---
+    @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        model = genai.GenerativeModel("gemini-3.6-flash")
-        response = model.generate_content(prompt_text)
-        return response.text
+        # Lista de modelos alternativos para no agotar la cuota
+        modelos_disponibles = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-3.6-flash"]
+        
+        ultimo_error = None
+        for nombre_modelo in modelos_disponibles:
+            try:
+                model = genai.GenerativeModel(nombre_modelo)
+                response = model.generate_content(prompt_text)
+                return response.text
+            except Exception as e:
+                ultimo_error = e
+                if "429" in str(e) or "404" in str(e):
+                    continue
+                raise e
+        
+        raise Exception(f"Límite diario alcanzado en los modelos de Google. Espera unos minutos. ({ultimo_error})")
 
     # Obtener datos de mercado
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
@@ -87,7 +98,6 @@ else:
         st.cache_data.clear()
         st.rerun()
 
-    # Ordenar noticias estrictamente de la más reciente a la más antigua
     noticias_ordenadas = sorted(
         feed.entries,
         key=lambda x: getattr(x, "published_parsed", 0),
@@ -135,7 +145,7 @@ else:
     }}
     """
 
-    with st.spinner("Procesando datos en vivo con caché inteligente..."):
+    with st.spinner("Procesando datos en vivo con IA..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
             clean_json = (
@@ -189,4 +199,5 @@ else:
                 st.write("---")
 
         except Exception as e:
-            st.error(f"Error al procesar los datos: {e}")
+            st.warning("⚠️ La API gratuita ha alcanzado el límite diario de consultas. Se restablecerá automáticamente en breve.")
+            st.info("💡 Mientras tanto, arriba puedes seguir consultando la cotización en vivo del Dólar (DXY) y el Bono a 2 años con sus datos técnicos.")
