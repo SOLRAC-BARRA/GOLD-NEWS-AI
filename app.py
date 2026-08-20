@@ -46,17 +46,18 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- FUNCIÓN CONSULTA IA (Sin respaldo sintético) ---
+    # --- FUNCIÓN CONSULTA IA (MODELOS COMPATIBLES) ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        modelos = ["gemini-2.0-flash", "gemini-2.5-flash"]
         ultimo_error = None
         for mod in modelos:
             try:
                 model = genai.GenerativeModel(mod)
                 response = model.generate_content(prompt_text)
-                return response.text
+                if response and response.text:
+                    return response.text
             except Exception as e:
                 ultimo_error = e
                 continue
