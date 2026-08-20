@@ -7,10 +7,11 @@ st.set_page_config(page_title="XAU/USD AI Radar", page_icon="🥇", layout="cent
 st.title("🥇 Radar de Noticias XAU/USD con IA")
 st.caption("Análisis macroeconómico en tiempo real sin coste")
 
-api_key = st.sidebar.text_input("Introduce tu Gemini API Key:", type="password")
+# Carga la clave privada automáticamente desde los Secrets
+api_key = st.secrets.get("GEMINI_API_KEY")
 
 if not api_key:
-    st.info("👈 Por favor, ingresa tu API Key en la barra lateral para empezar.")
+    st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-3.6-flash')
@@ -23,10 +24,7 @@ else:
 
     st.subheader("Últimos titulares procesados")
 
-    # Extraemos los 5 mejores titulares
     noticias = feed.entries[:5]
-    
-    # Construimos un único bloque de texto con todas las noticias
     texto_titulares = ""
     for i, entry in enumerate(noticias, 1):
         texto_titulares += f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
