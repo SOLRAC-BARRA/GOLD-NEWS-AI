@@ -50,7 +50,7 @@ else:
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
         # Usamos gemini-1.5-flash para tener 1500 peticiones diarias gratuitas
-        model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-3.6-flash')
         response = model.generate_content(prompt_text)
         return response.text
 
