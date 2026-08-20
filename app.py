@@ -3,12 +3,13 @@ import feedparser
 import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
+import pandas as pd
 import json
 
-st.set_page_config(page_title="XAU/USD AI Radar", page_icon="🥇", layout="centered")
+st.set_page_config(page_title="XAU/USD AI Radar Pro", page_icon="🥇", layout="centered")
 
-st.title("🥇 Radar de Noticias XAU/USD con IA")
-st.caption("Análisis macroeconómico + Cotización DXY en tiempo real")
+st.title("🥇 Radar Macro & Técnico XAU/USD")
+st.caption("Noticias + DXY + Bonos a 2 Años (US02Y) + RSI/Momentum")
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -18,24 +19,51 @@ else:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-3.6-flash')
 
-    # --- OBTENER DATOS REALES DEL DXY DESDE EL GRÁFICO ---
-    try:
-        dxy_ticker = yf.Ticker("DX-Y.NYB")
-        dxy_hist = dxy_ticker.history(period="2d")
-        if len(dxy_hist) >= 2:
-            precio_actual = dxy_hist['Close'].iloc[-1]
-            precio_anterior = dxy_hist['Close'].iloc[-2]
-            var_dxy = ((precio_actual - precio_anterior) / precio_anterior) * 100
-        else:
-            precio_actual, var_dxy = 100.0, 0.0
-    except Exception:
-        precio_actual, var_dxy = 100.0, 0.0
+    # --- FUNCIÓN PARA CALCULAR INDICADORES TÉCNICOS ---
+    def obtener_datos_mercado(ticker_symbol):
+        try:
+            df = yf.download(ticker_symbol, period="1mo", interval="1d", progress=False)
+            if len(df) >= 15:
+                # RSI 14
+                delta = df['Close'].diff()
+                gain = delta.where(delta > 0, 0).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss
+                df['RSI'] = 100 - (100 / (1 + rs))
+                
+                # Momentum 14
+                df['Momentum'] = df['Close'] - df['Close'].shift(14)
+                
+                precio_actual = float(df['Close'].iloc[-1])
+                precio_previo = float(df['Close'].iloc[-2])
+                var_pct = ((precio_actual - precio_previo) / precio_previo) * 100
+                
+                rsi_val = float(df['RSI'].iloc[-1])
+                mom_val = float(df['Momentum'].iloc[-1])
+                
+                return precio_actual, var_pct, rsi_val, mom_val
+        except Exception:
+            pass
+        return 100.0, 0.0, 50.0, 0.0
+
+    # Obtener DXY y US02Y (Bono 2 años)
+    dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
+    us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
+
+    # --- MÉTRICAS VISUALES EN CABECERA ---
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("DXY (Dólar)", f"{dxy_precio:.2f}", f"{dxy_var:.2f}%", delta_color="inverse")
+        st.caption(f"RSI(14): **{dxy_rsi:.1f}** | Momentum: **{dxy_mom:.2f}**")
+    with col2:
+        st.metric("US02Y (Bono 2 Años)", f"{us02_precio:.2f}%", f"{us02_var:.2f}%", delta_color="inverse")
+        st.caption(f"RSI(14): **{us02_rsi:.1f}** | Momentum: **{us02_mom:.2f}**")
 
     # --- OBTENER NOTICIAS RSS ---
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+Fed+inflation&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
-    if st.button("🔄 Actualizar Datos"):
+    if st.button("🔄 Actualizar Análisis"):
         st.rerun()
 
     noticias = feed.entries[:5]
@@ -43,25 +71,27 @@ else:
     for i, entry in enumerate(noticias, 1):
         texto_titulares += f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
 
-    # Prompteamos con el dato real del DXY incorporado
+    # --- PROMPT INTEGRADO ---
     prompt = f"""
-    Eres un analista macroeconómico experto en XAU/USD (Oro).
-    
-    DATOS REALES DEL MERCADO HOY:
-    - Cotización actual del DXY (Índice Dólar): {precio_actual:.2f}
-    - Variación diaria del DXY: {var_dxy:.2f}% (Si es negativo es Alcista para el Oro; si es positivo es Bajista para el Oro).
+    Eres un analista macroeconómico y técnico senior de XAU/USD (Oro).
 
-    NOTICIAS RECIENTES:
+    DATOS EN VIVO DEL MERCADO:
+    1. DXY (Dólar): Cotización = {dxy_precio:.2f} | Var = {dxy_var:.2f}% | RSI(14) = {dxy_rsi:.1f} | Momentum = {dxy_mom:.2f}
+    2. US02Y (Bono 2 años): Rendimiento = {us02_precio:.2f}% | Var = {us02_var:.2f}% | RSI(14) = {us02_rsi:.1f} | Momentum = {us02_mom:.2f}
+
+    NOTICIAS MACRO RECIENTES:
     {texto_titulares}
 
-    Calcula la fuerza del Oro considerando obligatoriamente la variación real del DXY actual.
+    ANÁLISIS REQUERIDO:
+    Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos (un RSI > 70 indica sobrecompra del Dólar/Bono = Alcista para el Oro; un RSI < 30 indica sobreventa del Dólar/Bono = Bajista para el Oro).
+
     Responde EXCLUSIVAMENTE en formato JSON válido (sin etiquetas markdown ```json) con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
         "factores": {{
-            "Impacto DXY (Dólar Real)": 80,
-            "Expectativas Tipos Fed": 70,
+            "Presión DXY (Dólar + RSI)": 80,
+            "Rendimiento Bono 2Y (Fed)": 70,
             "Demanda Refugio Seguro": 85,
             "Presión Inflacionaria": 60
         }},
@@ -69,26 +99,18 @@ else:
             {{
                 "titulo": "Título traducido al español",
                 "sesgo": "Alcista 🟢",
-                "explicacion": "Explicación breve de 1 frase.",
+                "explicacion": "Explicación breve de 1 frase relacionando la noticia con el DXY o Bonos.",
                 "url": "URL original"
             }}
         ]
     }}
     """
 
-    with st.spinner("Conectando con el gráfico del DXY y analizando noticias..."):
+    with st.spinner("Procesando datos técnicos, rendimientos de bonos y noticias..."):
         try:
             response = model.generate_content(prompt)
             clean_json = response.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_json)
-
-            # Muestra el dato en vivo del DXY en la cabecera
-            st.metric(
-                label="DXY (Índice Dólar en vivo)",
-                value=f"{precio_actual:.2f}",
-                delta=f"{var_dxy:.2f}%",
-                delta_color="inverse" # En el Oro, que el DXY baje (rojo) es una métrica positiva (verde)
-            )
 
             # --- DIBUJAR TERMÓMETRO ---
             score = data["score_global"]
@@ -97,7 +119,7 @@ else:
             fig = go.Figure(go.Indicator(
                 mode = "gauge+number",
                 value = score,
-                title = {'text': f"<b>Sentimiento Combinado XAU/USD</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"},
+                title = {'text': f"<b>Sentimiento Combinado Macro + Técnico XAU/USD</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"},
                 gauge = {
                     'axis': {'range': [0, 100]},
                     'bar': {'color': "#FFFFFF"},
@@ -111,8 +133,8 @@ else:
             fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- DESGROSE DE FACTORES ---
-            st.subheader("📊 Desglose de Factores")
+            # --- DESGLOSE DE FACTORES ---
+            st.subheader("📊 Factores Clave (Macro & Técnico)")
             for factor, valor in data["factores"].items():
                 st.write(f"**{factor}:** {valor}/100")
                 st.progress(valor / 100)
