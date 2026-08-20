@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🥇 Radar Macro & Técnico XAU/USD")
-st.caption("Noticias en vivo (24h) + DXY + Bonos a 2 Años (US02Y) + RSI/Momentum")
+st.caption("Noticias en vivo (24h)")
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -19,7 +19,7 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- DATOS DE MERCADO ---
+    # --- DATOS DE MERCADO (Caché de 10 minutos) ---
     @st.cache_data(ttl=600)
     def obtener_datos_mercado(ticker_symbol):
         try:
@@ -44,17 +44,28 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- CONSULTA A GEMINI ---
+    # --- CONSULTA A GEMINI (Caché de 30 minutos = 1800s) ---
+    @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        model = genai.GenerativeModel("gemini-3.6-flash")
-        response = model.generate_content(
-            prompt_text,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        return response.text
+        
+        # Sistema de fallback automático entre modelos
+        modelos = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+        for mod in modelos:
+            try:
+                model = genai.GenerativeModel(mod)
+                response = model.generate_content(
+                    prompt_text,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                if response and response.text:
+                    return response.text
+            except Exception:
+                continue
+                
+        raise Exception("No se pudo obtener respuesta de la API de Gemini.")
 
-    # Cargar datos
+    # Cargar datos de mercado
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
 
@@ -77,10 +88,11 @@ else:
         )
         st.caption(f"RSI(14): **{us02_rsi:.1f}** | Momentum: **{us02_mom:.2f}**")
 
-    # Obtener Noticias
+    # Obtener Noticias RSS
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
+    # Botón para forzar actualización manual (Limpia el caché)
     if st.button("🔄 Actualizar Análisis"):
         st.cache_data.clear()
         st.rerun()
