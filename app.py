@@ -16,13 +16,12 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3.6-flash')
-
-    # --- FUNCIÓN PARA CALCULAR INDICADORES TÉCNICOS ---
+    # --- FUNCIÓN CON CACHÉ PARA MERCADOS (guarda datos 5 min) ---
+    @st.cache_data(ttl=300)
     def obtener_datos_mercado(ticker_symbol):
         try:
-            df = yf.download(ticker_symbol, period="1mo", interval="1d", progress=False)
+            ticker = yf.Ticker(ticker_symbol)
+            df = ticker.history(period="1mo")
             if len(df) >= 15:
                 # RSI 14
                 delta = df['Close'].diff()
@@ -44,9 +43,18 @@ else:
                 return precio_actual, var_pct, rsi_val, mom_val
         except Exception:
             pass
-        return 100.0, 0.0, 50.0, 0.0
+        return 0.0, 0.0, 50.0, 0.0
 
-    # Obtener DXY y US02Y (Bono 2 años)
+    # --- FUNCIÓN CON CACHÉ PARA LA IA (guarda respuesta 10 min) ---
+    @st.cache_data(ttl=600)
+    def consultar_gemini(prompt_text, key):
+        genai.configure(api_key=key)
+        # Usamos gemini-1.5-flash para tener 1500 peticiones diarias gratuitas
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt_text)
+        return response.text
+
+    # Obtener DXY y US02Y
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
 
@@ -64,6 +72,7 @@ else:
     feed = feedparser.parse(rss_url)
 
     if st.button("🔄 Actualizar Análisis"):
+        st.cache_data.clear()
         st.rerun()
 
     noticias = feed.entries[:5]
@@ -71,7 +80,6 @@ else:
     for i, entry in enumerate(noticias, 1):
         texto_titulares += f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
 
-    # --- PROMPT INTEGRADO ---
     prompt = f"""
     Eres un analista macroeconómico y técnico senior de XAU/USD (Oro).
 
@@ -83,7 +91,7 @@ else:
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos (un RSI > 70 indica sobrecompra del Dólar/Bono = Alcista para el Oro; un RSI < 30 indica sobreventa del Dólar/Bono = Bajista para el Oro).
+    Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
 
     Responde EXCLUSIVAMENTE en formato JSON válido (sin etiquetas markdown ```json) con esta estructura:
     {{
@@ -99,17 +107,17 @@ else:
             {{
                 "titulo": "Título traducido al español",
                 "sesgo": "Alcista 🟢",
-                "explicacion": "Explicación breve de 1 frase relacionando la noticia con el DXY o Bonos.",
+                "explicacion": "Explicación breve de 1 frase.",
                 "url": "URL original"
             }}
         ]
     }}
     """
 
-    with st.spinner("Procesando datos técnicos, rendimientos de bonos y noticias..."):
+    with st.spinner("Procesando datos con caché inteligente..."):
         try:
-            response = model.generate_content(prompt)
-            clean_json = response.text.replace("```json", "").replace("```", "").strip()
+            raw_response = consultar_gemini(prompt, api_key)
+            clean_json = raw_response.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_json)
 
             # --- DIBUJAR TERMÓMETRO ---
