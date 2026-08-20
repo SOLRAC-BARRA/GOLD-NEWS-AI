@@ -46,11 +46,11 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- FUNCIÓN CONSULTA IA (MODELOS COMPATIBLES) ---
+    # --- FUNCIÓN CONSULTA IA (MODELO VÁLIDO GEMINI-3.6-FLASH) ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
-        modelos = ["gemini-2.0-flash", "gemini-2.5-flash"]
+        modelos = ["gemini-3.6-flash", "gemini-2.0-flash"]
         ultimo_error = None
         for mod in modelos:
             try:
