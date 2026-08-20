@@ -1,4 +1,5 @@
 import json
+import re
 import feedparser
 import google.generativeai as genai
 import pandas as pd
@@ -46,30 +47,31 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- FUNCIÓN CONSULTA IA CON DETECCIÓN DINÁMICA DE MODELOS ---
+    # --- FUNCIÓN CONSULTA IA (FORZANDO MODO JSON) ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
 
-        # Detectar dinámicamente qué modelos admite la clave ingresada
-        modelos_candidatos = []
-        try:
-            for m in genai.list_models():
-                if "generateContent" in m.supported_generation_methods:
-                    modelos_candidatos.append(m.name)
-        except Exception:
-            pass
-
-        # Si no detecta automáticos, añade respaldos universales
-        if not modelos_candidatos:
-            modelos_candidatos = [
-                "gemini-1.5-flash",
-                "gemini-1.5-pro",
-                "models/gemini-1.5-flash",
-            ]
+        modelos = ["gemini-1.5-flash", "gemini-1.5-pro"]
+        gen_config = genai.types.GenerationConfig(
+            response_mime_type="application/json"
+        )
 
         ultimo_error = None
-        for mod in modelos_candidatos:
+
+        # Intentar con modo JSON estricto
+        for mod in modelos:
+            try:
+                model = genai.GenerativeModel(mod, generation_config=gen_config)
+                response = model.generate_content(prompt_text)
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                ultimo_error = e
+                continue
+
+        # Reintento estándar si la versión no soporta mime_type
+        for mod in modelos:
             try:
                 model = genai.GenerativeModel(mod)
                 response = model.generate_content(prompt_text)
@@ -138,7 +140,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
 
-    Responde EXCLUSIVAMENTE en formato JSON válido (sin etiquetas markdown ```json) con esta estructura:
+    Responde EXCLUSIVAMENTE con un objeto JSON válido estructurado como este ejemplo:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
@@ -162,10 +164,14 @@ else:
     with st.spinner("Procesando datos con IA..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
-            clean_json = (
-                raw_response.replace("```json", "").replace("```", "").strip()
-            )
-            data = json.loads(clean_json)
+
+            # Extracción robusta de JSON con expresiones regulares
+            match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+            if match:
+                clean_json = match.group(0)
+                data = json.loads(clean_json)
+            else:
+                raise ValueError("La respuesta de la IA no contenía un JSON válido.")
 
             # --- DIBUJAR TERMÓMETRO ---
             score = data["score_global"]
@@ -213,4 +219,4 @@ else:
                 st.write("---")
 
         except Exception as e:
-            st.error(f"Error al conectar con la API de Google Gemini: {e}")
+            st.error(f"Error al procesar la respuesta de la IA: {e}")
