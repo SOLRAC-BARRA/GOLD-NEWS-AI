@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🥇 Radar Macro & Técnico XAU/USD")
-st.caption("Noticias en vivo (24h) + DXY + Bonos a 2 Años (US02Y) + RSI/Momentum")
+st.caption("Noticias en vivo (24h)")
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 
