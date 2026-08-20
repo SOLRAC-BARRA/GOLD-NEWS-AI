@@ -44,13 +44,12 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- CONSULTA A GEMINI 3.6 FLASH ---
+    # --- CONSULTA A GEMINI ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
 
-        # Probar únicamente el identificador oficial requerido
-        modelos = ["gemini-3.6-flash", "models/gemini-3.6-flash"]
+        modelos = ["gemini-1.5-flash", "gemini-1.5-pro"]
         
         for mod in modelos:
             try:
@@ -64,7 +63,10 @@ else:
             except Exception:
                 continue
 
-        raise Exception("No se pudo conectar con el modelo gemini-3.6-flash.")
+        raise Exception(
+            "La API Key no tiene permisos para usar Gemini. "
+            "Asegúrate de haber activado la 'Generative Language API' en tu Google Cloud Console."
+        )
 
     # Cargar datos
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
@@ -123,7 +125,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
 
-    Responde en formato JSON strictly válido con esta estructura:
+    Responde en formato JSON válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
@@ -144,7 +146,7 @@ else:
     }}
     """
 
-    with st.spinner("Procesando datos con Gemini 3.6..."):
+    with st.spinner("Procesando datos con Gemini..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
 
