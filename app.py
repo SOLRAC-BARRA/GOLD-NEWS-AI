@@ -22,7 +22,7 @@ if not api_key:
 else:
 
     # --- 1. DATOS TÉCNICOS Y MERCADO ---
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=300)
     def obtener_datos_mercado(ticker_symbol):
         try:
             ticker = yf.Ticker(ticker_symbol)
@@ -48,31 +48,42 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO (Incluye R3/S3 para Breakouts) ---
-    @st.cache_data(ttl=600)
+    # --- 2. CÁLCULO DE PIVOT POINTS EN TIEMPO REAL (XAUUSD=X Spot) ---
+    @st.cache_data(ttl=300)
     def calcular_pivot_points():
         try:
-            gold = yf.Ticker("GC=F")
-            df = gold.history(period="7d", interval="1d").dropna()
-            if len(df) < 2:
-                return {
-                    "PP": 0,
-                    "R1": 0,
-                    "S1": 0,
-                    "R2": 0,
-                    "S2": 0,
-                    "R3": 0,
-                    "S3": 0,
-                    "Precio_Ref": 0,
-                }
+            # Usar Spot XAU/USD para coincidir con el gráfico de OANDA
+            gold = yf.Ticker("XAUUSD=X")
+            df_hourly = gold.history(period="5d", interval="1h")
 
-            precio_ref = float(df["Close"].iloc[-1])
+            if df_hourly.empty or len(df_hourly) < 24:
+                df_daily = gold.history(period="7d", interval="1d").dropna()
+                prev_session = df_daily.iloc[-2]
+                high = float(prev_session["High"])
+                low = float(prev_session["Low"])
+                close = float(prev_session["Close"])
+                precio_ref = float(df_daily["Close"].iloc[-1])
+            else:
+                # Normalizar índice a UTC para delimitar la sesión previa exacta
+                df_hourly.index = df_hourly.index.tz_convert("UTC")
+                fechas_unicas = list(dict.fromkeys(df_hourly.index.date))
 
-            prev_session = df.iloc[-2]
-            high = float(prev_session["High"])
-            low = float(prev_session["Low"])
-            close = float(prev_session["Close"])
+                if len(fechas_unicas) >= 2:
+                    fecha_anterior = fechas_unicas[-2]
+                    df_prev = df_hourly[
+                        df_hourly.index.date == fecha_anterior
+                    ]
+                    high = float(df_prev["High"].max())
+                    low = float(df_prev["Low"].min())
+                    close = float(df_prev["Close"].iloc[-1])
+                else:
+                    high = float(df_hourly["High"].max())
+                    low = float(df_hourly["Low"].min())
+                    close = float(df_hourly["Close"].iloc[-1])
 
+                precio_ref = float(df_hourly["Close"].iloc[-1])
+
+            # Cálculo de Pivots extendido (PP, R1-R4, S1-S4)
             pp = (high + low + close) / 3.0
             r1 = (2 * pp) - low
             s1 = (2 * pp) - high
@@ -80,6 +91,8 @@ else:
             s2 = pp - (high - low)
             r3 = high + 2 * (pp - low)
             s3 = low - 2 * (high - pp)
+            r4 = r3 + (high - low)  # Nivel de extensión impulsiva
+            s4 = s3 - (high - low)
 
             return {
                 "PP": round(pp, 2),
@@ -89,6 +102,8 @@ else:
                 "S2": round(s2, 2),
                 "R3": round(r3, 2),
                 "S3": round(s3, 2),
+                "R4": round(r4, 2),
+                "S4": round(s4, 2),
                 "Precio_Ref": round(precio_ref, 2),
             }
         except Exception:
@@ -100,6 +115,8 @@ else:
                 "S2": 0,
                 "R3": 0,
                 "S3": 0,
+                "R4": 0,
+                "S4": 0,
                 "Precio_Ref": 0,
             }
 
@@ -122,7 +139,6 @@ else:
             prox_exp = expiraciones[0]
             opt = gld.option_chain(prox_exp)
 
-            # Acotar la búsqueda a un rango cercano (+/- 4% del precio actual)
             limite_sup = gld_price * 1.04
             limite_inf = gld_price * 0.96
 
@@ -135,7 +151,6 @@ else:
                 & (opt.puts["strike"] >= limite_inf)
             ]
 
-            # Respaldos en caso de que el corredor de 4% no tenga liquidez suficiente
             if otm_calls.empty:
                 otm_calls = opt.calls[opt.calls["strike"] >= gld_price]
             if otm_puts.empty:
@@ -226,13 +241,14 @@ else:
     st.subheader("🎯 Niveles Clave & Muros Tácticos")
     if pivots["Precio_Ref"] > 0:
         st.caption(
-            f"Precio de referencia de Futuros (GC=F): **${pivots['Precio_Ref']}**"
+            f"Precio Spot de Referencia (XAU/USD): **${pivots['Precio_Ref']}**"
         )
 
     p_col1, p_col2 = st.columns(2)
 
     with p_col1:
-        st.markdown("**Pivot Points (Tácticos)**")
+        st.markdown("**Pivot Points (Spot Daily)**")
+        st.write(f"- **Extensión Alcista (R4):** `${pivots['R4']}`")
         st.write(f"- **Resistencia Extrema (R3):** `${pivots['R3']}`")
         st.write(f"- **Resistencia 2 (R2):** `${pivots['R2']}`")
         st.write(f"- **Resistencia 1 (R1):** `${pivots['R1']}`")
@@ -282,10 +298,10 @@ else:
     Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. Precio Futuro Referencia (GC=F): ${pivots['Precio_Ref']}
+    1. Precio Spot Referencia (XAU/USD): ${pivots['Precio_Ref']}
     2. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
     3. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
-    4. PIVOT POINTS DIARIOS: Pivote Central: {pivots['PP']} | Rango R1 ({pivots['R1']}) a R3 ({pivots['R3']})
+    4. PIVOT POINTS DIARIOS: Pivote Central: {pivots['PP']} | Rango R1 ({pivots['R1']}) a R4 ({pivots['R4']})
     5. OPCIONES TÁCTICAS (OPEN INTEREST): Muro Resistencia Call: ~${max_call_strike} | Muro Soporte Put: ~${max_put_strike}
 
     NOTICIAS MACRO RECIENTES (24h):
@@ -294,7 +310,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, comportamiento frente a los Pivots y cercanía a los muros de opciones cercanos.
 
-    Responde en formato JSON estrictamente válido con esta estructura:
+    Responde en formato JSON strictly válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
