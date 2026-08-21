@@ -48,7 +48,7 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO ---
+    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO (Hasta Nivel 6) ---
     @st.cache_data(ttl=300)
     def calcular_pivot_points():
         tickers_oro = ["GC=F", "XAUUSD=X"]
@@ -65,7 +65,7 @@ else:
                 continue
 
         if df is None or len(df) < 2:
-            return {}, 0.0
+            return [], 0.0
 
         prev_session = df.iloc[-2]
         high = float(prev_session["High"])
@@ -76,25 +76,28 @@ else:
         rango = high - low
         pp = (high + low + close) / 3.0
 
-        niveles = {
-            "Extensión Fib 1.618 (R6)": round(close + (rango * 1.618), 2),
-            "Extensión Fib 1.168 (R5)": round(close + (rango * 1.168), 2),
-            "Breakout Camarilla (R4)": round(close + (rango * 1.1 / 2), 2),
-            "Resistencia 3 (R3)": round(high + 2 * (pp - low), 2),
-            "Resistencia 2 (R2)": round(pp + rango, 2),
-            "Resistencia 1 (R1)": round((2 * pp) - low, 2),
-            "Punto Pivote (PP)": round(pp, 2),
-            "Soporte 1 (S1)": round((2 * pp) - high, 2),
-            "Soporte 2 (S2)": round(pp - rango, 2),
-            "Soporte 3 (S3)": round(low - 2 * (high - pp), 2),
-        }
+        # Tupla de (Nombre, Valor, Nivel_Jerarquía)
+        niveles_lista = [
+            ("Extensión Fib 1.618 (R6)", round(close + (rango * 1.618), 2), 6),
+            ("Extensión Fib 1.168 (R5)", round(close + (rango * 1.168), 2), 5),
+            ("Breakout Camarilla (R4)", round(close + (rango * 1.1 / 2), 2), 4),
+            ("Resistencia 3 (R3)", round(high + 2 * (pp - low), 2), 3),
+            ("Resistencia 2 (R2)", round(pp + rango, 2), 2),
+            ("Resistencia 1 (R1)", round((2 * pp) - low, 2), 1),
+            ("Punto Pivote (PP)", round(pp, 2), 0),
+            ("Soporte 1 (S1)", round((2 * pp) - high, 2), 1),
+            ("Soporte 2 (S2)", round(pp - rango, 2), 2),
+            ("Soporte 3 (S3)", round(low - 2 * (high - pp), 2), 3),
+            ("Breakout Camarilla (S4)", round(close - (rango * 1.1 / 2), 2), 4),
+            ("Soporte Fib 1.168 (S5)", round(close - (rango * 1.168), 2), 5),
+            ("Soporte Fib 1.618 (S6)", round(close - (rango * 1.618), 2), 6),
+        ]
 
-        return niveles, round(precio_ref, 2)
+        return niveles_lista, round(precio_ref, 2)
 
-    # --- 3. OPEN INTEREST EN OPCIONES (Ajuste Táctico Estrecho) ---
+    # --- 3. OPEN INTEREST EN OPCIONES ---
     @st.cache_data(ttl=1800)
     def obtener_open_interest_opciones(precio_oro_ref, rango_pct=0.02):
-        """rango_pct=0.02 restringe la búsqueda a un ±2% del precio spot (~$90 puntos en Oro)"""
         try:
             gld = yf.Ticker("GLD")
             df_gld = gld.history(period="1d")
@@ -116,27 +119,20 @@ else:
             prox_exp = expiraciones[0]
             opt = gld.option_chain(prox_exp)
 
-            # Rango ceñido dinámico (ej. 2% arriba y abajo)
             limite_sup = gld_price * (1 + rango_pct)
             limite_inf = gld_price * (1 - rango_pct)
 
-            # OTM Calls (desde el precio spot hasta +2%)
             otm_calls = opt.calls[
                 (opt.calls["strike"] > gld_price)
                 & (opt.calls["strike"] <= limite_sup)
             ]
-            # OTM Puts (desde el precio spot hasta -2%)
             otm_puts = opt.puts[
                 (opt.puts["strike"] < gld_price)
                 & (opt.puts["strike"] >= limite_inf)
             ]
 
-            # Fallback en caso de que no haya contratos en el rango tan estrecho
             if otm_calls.empty:
-                otm_calls = opt.calls[
-                    opt.calls["strike"]
-                    > gld_price  # Amplía búsqueda si está vacío
-                ]
+                otm_calls = opt.calls[opt.calls["strike"] > gld_price]
             if otm_puts.empty:
                 otm_puts = opt.puts[opt.puts["strike"] < gld_price]
 
@@ -197,17 +193,28 @@ else:
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
     niveles_pivots, precio_ref = calcular_pivot_points()
 
-    # Selector en UI para ajustar la sensibilidad del muro de opciones (1.5%, 2% o 3%)
-    st.sidebar.header("⚙️ Configuración Opciones")
+    # --- BARRA LATERAL (CONTROLES PERSONALIZADOS) ---
+    st.sidebar.header("⚙️ Configuración del Radar")
+
+    # Slider 1: Sensibilidad Opciones (ahora de 0.5% a 5.0%)
     sensibilidad_opc = (
         st.sidebar.slider(
-            "Rango Táctico OTM (% spot)",
-            min_value=1.0,
+            "Sensibilidad Muros OTM (% spot)",
+            min_value=0.5,
             max_value=5.0,
             value=2.0,
             step=0.5,
         )
         / 100.0
+    )
+
+    # Slider 2: Profundidad de Niveles Pivote (de 3 a 6)
+    max_niveles_pivots = st.sidebar.slider(
+        "Niveles Pivote a mostrar (R/S)",
+        min_value=3,
+        max_value=6,
+        value=4,
+        step=1,
     )
 
     max_call_strike, max_put_strike, fecha_exp = (
@@ -245,26 +252,31 @@ else:
     p_col1, p_col2 = st.columns(2)
 
     with p_col1:
-        st.markdown("**Clasificación Dinámica de Niveles**")
+        st.markdown(f"**Niveles Pivote (Hasta R{max_niveles_pivots}/S{max_niveles_pivots})**")
         if niveles_pivots:
-            por_encima = {
-                k: v for k, v in niveles_pivots.items() if v > precio_ref
-            }
-            por_debajo = {
-                k: v for k, v in niveles_pivots.items() if v <= precio_ref
-            }
+            # Filtrar niveles según la cantidad seleccionada en la sidebar
+            niveles_filtrados = [
+                item for item in niveles_pivots if item[2] <= max_niveles_pivots
+            ]
+
+            por_encima = [
+                item for item in niveles_filtrados if item[1] > precio_ref
+            ]
+            por_debajo = [
+                item for item in niveles_filtrados if item[1] <= precio_ref
+            ]
 
             if por_encima:
-                st.write("🔴 **Resistencias / Objetivos Alcistas:**")
-                for nombre, valor in sorted(
-                    por_encima.items(), key=lambda x: x[1]
+                st.write("🔴 **Resistencias / Objetivos:**")
+                for nombre, valor, _ in sorted(
+                    por_encima, key=lambda x: x[1]
                 ):
                     st.write(f"- {nombre}: `${valor}`")
 
             if por_debajo:
-                st.write("🟢 **Soportes / Zonas de Retesteo:**")
-                for nombre, valor in sorted(
-                    por_debajo.items(), key=lambda x: x[1], reverse=True
+                st.write("🟢 **Soportes / Retesteos:**")
+                for nombre, valor, _ in sorted(
+                    por_debajo, key=lambda x: x[1], reverse=True
                 ):
                     st.write(f"- {nombre}: `${valor}`")
 
@@ -314,7 +326,7 @@ else:
     1. Precio Referencia Oro: ${precio_ref}
     2. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
     3. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
-    4. PIVOTS CALCULADOS: {niveles_pivots}
+    4. PIVOTS MOSTRADOS EN UI: {niveles_filtrados if 'niveles_filtrados' in locals() else niveles_pivots}
     5. OPCIONES TÁCTICAS (OPEN INTEREST): Muro Resistencia Call: ~${max_call_strike} | Muro Soporte Put: ~${max_put_strike}
 
     NOTICIAS MACRO RECIENTES (24h):
@@ -323,7 +335,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, comportamiento frente a la estructura de niveles y los muros de opciones cercanos.
 
-    Responde en formato JSON strictly válido con esta estructura:
+    Responde en formato JSON estrictamente válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
