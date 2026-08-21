@@ -48,7 +48,7 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- 2. CÁLCULO DE PIVOTS CAMARILLA & FIBONACCI (Ajustado para Breakouts) ---
+    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO ---
     @st.cache_data(ttl=300)
     def calcular_pivot_points():
         tickers_oro = ["GC=F", "XAUUSD=X"]
@@ -65,19 +65,7 @@ else:
                 continue
 
         if df is None or len(df) < 2:
-            return {
-                "PP": 0,
-                "R1": 0,
-                "S1": 0,
-                "R2": 0,
-                "S2": 0,
-                "R3": 0,
-                "S3": 0,
-                "R4": 0,
-                "R5": 0,
-                "R6": 0,
-                "Precio_Ref": 0,
-            }
+            return {}, 0.0
 
         prev_session = df.iloc[-2]
         high = float(prev_session["High"])
@@ -85,36 +73,23 @@ else:
         close = float(prev_session["Close"])
         precio_ref = float(df["Close"].iloc[-1])
 
-        # Rango del día previo
         rango = high - low
         pp = (high + low + close) / 3.0
 
-        # Niveles Tradicionales
-        r1 = (2 * pp) - low
-        s1 = (2 * pp) - high
-        r2 = pp + rango
-        s2 = pp - rango
-        r3 = high + 2 * (pp - low)
-        s3 = low - 2 * (high - pp)
-
-        # Extensiones Fibonacci / Camarilla para rupturas parabólicas (Breakout Targets)
-        r4 = close + (rango * 1.1 / 2)  # Nivel Camarilla R4 (Breakout)
-        r5 = close + (rango * 1.168)  # Extensión Fib 1.168
-        r6 = close + (rango * 1.618)  # Extensión Fib 1.618 (Objetivo Extremo)
-
-        return {
-            "PP": round(pp, 2),
-            "R1": round(r1, 2),
-            "S1": round(s1, 2),
-            "R2": round(r2, 2),
-            "S2": round(s2, 2),
-            "R3": round(r3, 2),
-            "S3": round(s3, 2),
-            "R4": round(r4, 2),
-            "R5": round(r5, 2),
-            "R6": round(r6, 2),
-            "Precio_Ref": round(precio_ref, 2),
+        niveles = {
+            "Extensión Fib 1.618 (R6)": round(close + (rango * 1.618), 2),
+            "Extensión Fib 1.168 (R5)": round(close + (rango * 1.168), 2),
+            "Breakout Camarilla (R4)": round(close + (rango * 1.1 / 2), 2),
+            "Resistencia 3 (R3)": round(high + 2 * (pp - low), 2),
+            "Resistencia 2 (R2)": round(pp + rango, 2),
+            "Resistencia 1 (R1)": round((2 * pp) - low, 2),
+            "Punto Pivote (PP)": round(pp, 2),
+            "Soporte 1 (S1)": round((2 * pp) - high, 2),
+            "Soporte 2 (S2)": round(pp - rango, 2),
+            "Soporte 3 (S3)": round(low - 2 * (high - pp), 2),
         }
+
+        return niveles, round(precio_ref, 2)
 
     # --- 3. OPEN INTEREST EN OPCIONES (Muros OTM Tácticos) ---
     @st.cache_data(ttl=1800)
@@ -212,9 +187,9 @@ else:
     # Cargar datos
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
-    pivots = calcular_pivot_points()
+    niveles_pivots, precio_ref = calcular_pivot_points()
     max_call_strike, max_put_strike, fecha_exp = (
-        obtener_open_interest_opciones(pivots["Precio_Ref"])
+        obtener_open_interest_opciones(precio_ref)
     )
 
     # --- BLOQUE VISUAL SUPERIOR ---
@@ -240,24 +215,35 @@ else:
 
     # --- BLOQUE PIVOTS Y OPEN INTEREST ---
     st.subheader("🎯 Niveles Clave & Muros Tácticos")
-    if pivots["Precio_Ref"] > 0:
-        st.caption(
-            f"Precio de Referencia Actual: **${pivots['Precio_Ref']}**"
-        )
+    if precio_ref > 0:
+        st.caption(f"Precio Actual de Referencia: **${precio_ref}**")
 
     p_col1, p_col2 = st.columns(2)
 
     with p_col1:
-        st.markdown("**Niveles y Objetivos (Pivots + Extensiones)**")
-        # Mostrar niveles superiores ajustados al precio actual
-        st.write(f"- **Extensión Máxima (R6):** `${pivots['R6']}`")
-        st.write(f"- **Extensión Fib 1.168 (R5):** `${pivots['R5']}`")
-        st.write(f"- **Breakout Camarilla (R4):** `${pivots['R4']}`")
-        st.write(f"- **Resistencia 3 (R3):** `${pivots['R3']}`")
-        st.write(f"- **Resistencia 2 (R2):** `${pivots['R2']}`")
-        st.write(f"- **Resistencia 1 (R1):** `${pivots['R1']}`")
-        st.write(f"- **Punto Pivote (PP):** `${pivots['PP']}`")
-        st.write(f"- **Soporte 1 (S1):** `${pivots['S1']}`")
+        st.markdown("**Clasificación Dinámica de Niveles**")
+        if niveles_pivots:
+            # Separar niveles según posición respecto al precio actual
+            por_encima = {
+                k: v for k, v in niveles_pivots.items() if v > precio_ref
+            }
+            por_debajo = {
+                k: v for k, v in niveles_pivots.items() if v <= precio_ref
+            }
+
+            if por_encima:
+                st.write("🔴 **Resistencias / Objetivos Alcistas:**")
+                for nombre, valor in sorted(
+                    por_encima.items(), key=lambda x: x[1]
+                ):
+                    st.write(f"- {nombre}: `${valor}`")
+
+            if por_debajo:
+                st.write("🟢 **Soportes / Zonas de Retesteo:**")
+                for nombre, valor in sorted(
+                    por_debajo.items(), key=lambda x: x[1], reverse=True
+                ):
+                    st.write(f"- {nombre}: `${valor}`")
 
     with p_col2:
         st.markdown("**Muros OTM Cercanos (Max OI ±5%)**")
@@ -300,17 +286,17 @@ else:
     Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. Precio Referencia Oro: ${pivots['Precio_Ref']}
+    1. Precio Referencia Oro: ${precio_ref}
     2. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
     3. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
-    4. PIVOT POINTS Y EXTENSIONES: Pivote Central: {pivots['PP']} | Extensiones Alcistas: R4 ({pivots['R4']}), R5 ({pivots['R5']}), R6 ({pivots['R6']})
+    4. PIVOTS CALCULADOS: {niveles_pivots}
     5. OPCIONES TÁCTICAS (OPEN INTEREST): Muro Resistencia Call: ~${max_call_strike} | Muro Soporte Put: ~${max_put_strike}
 
     NOTICIAS MACRO RECIENTES (24h):
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, comportamiento frente a las extensiones de Pivots y cercanía a los muros de opciones cercanos.
+    Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, comportamiento frente a la estructura de niveles y los muros de opciones cercanos.
 
     Responde en formato JSON estrictamente válido con esta estructura:
     {{
