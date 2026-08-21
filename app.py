@@ -10,8 +10,10 @@ st.set_page_config(
     page_title="XAU/USD AI Radar Pro", page_icon="🥇", layout="centered"
 )
 
-st.title("🥇 Radar Macro & Técnico XAU/USD")
-st.caption("Noticias en vivo (24h) + DXY + Bonos a 2 Años (US02Y) + RSI/Momentum")
+st.title("🥇 Radar Macro, Técnico & Opciones XAU/USD")
+st.caption(
+    "Noticias (24h) + DXY + Bonos US02Y + Pivot Points + Open Interest (Opciones)"
+)
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 
@@ -19,7 +21,7 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- DATOS DE MERCADO (Caché de 10 minutos) ---
+    # --- 1. DATOS TÉCNICOS Y MERCADO ---
     @st.cache_data(ttl=600)
     def obtener_datos_mercado(ticker_symbol):
         try:
@@ -35,7 +37,9 @@ else:
 
                 precio_actual = float(df["Close"].iloc[-1])
                 precio_previo = float(df["Close"].iloc[-2])
-                var_pct = ((precio_actual - precio_previo) / precio_previo) * 100
+                var_pct = (
+                    (precio_actual - precio_previo) / precio_previo
+                ) * 100
                 rsi_val = float(df["RSI"].iloc[-1])
                 mom_val = float(df["Momentum"].iloc[-1])
 
@@ -44,7 +48,56 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- CONSULTA A GEMINI (Detección dinámica + Caché de 30 min) ---
+    # --- 2. CÁLCULO DE PIVOT POINTS (Cierre diario anterior) ---
+    @st.cache_data(ttl=1800)
+    def calcular_pivot_points():
+        try:
+            gold = yf.Ticker("GC=F")
+            df = gold.history(period="5d")
+            high = float(df["High"].iloc[-2])
+            low = float(df["Low"].iloc[-2])
+            close = float(df["Close"].iloc[-2])
+
+            pp = (high + low + close) / 3
+            r1 = (2 * pp) - low
+            s1 = (2 * pp) - high
+            r2 = pp + (high - low)
+            s2 = pp - (high - low)
+
+            return {
+                "PP": round(pp, 2),
+                "R1": round(r1, 2),
+                "S1": round(s1, 2),
+                "R2": round(r2, 2),
+                "S2": round(s2, 2),
+            }
+        except Exception:
+            return {"PP": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+
+    # --- 3. OPEN INTEREST EN OPCIONES (Muro de Calls / Puts vía GLD) ---
+    @st.cache_data(ttl=3600)
+    def obtener_open_interest_opciones():
+        try:
+            gld = yf.Ticker("GLD")
+            expiraciones = gld.options
+            if not expiraciones:
+                return None, None, None
+
+            prox_exp = expiraciones[0]
+            opt = gld.option_chain(prox_exp)
+
+            max_call_row = opt.calls.loc[opt.calls["openInterest"].idxmax()]
+            max_put_row = opt.puts.loc[opt.puts["openInterest"].idxmax()]
+
+            # Multiplicador ~10.8 para convertir el Strike de GLD al precio Spot aproximado del Oro
+            strike_call_gold = round(max_call_row["strike"] * 10.8, 0)
+            strike_put_gold = round(max_put_row["strike"] * 10.8, 0)
+
+            return strike_call_gold, strike_put_gold, prox_exp
+        except Exception:
+            return None, None, None
+
+    # --- 4. CONSULTA DINÁMICA A GEMINI ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
@@ -54,8 +107,6 @@ else:
             "gemini-3.6-flash",
             "gemini-2.5-pro",
         ]
-
-        # Intentar obtener la lista real de modelos que soporta tu API Key
         try:
             modelos_api = [
                 m.name.replace("models/", "")
@@ -63,36 +114,40 @@ else:
                 if "generateContent" in m.supported_generation_methods
             ]
             if modelos_api:
-                # Priorizar modelos "flash"
                 flash_models = [m for m in modelos_api if "flash" in m]
-                modelos_candidatos = flash_models + modelos_api + modelos_candidatos
+                modelos_candidatos = (
+                    flash_models + modelos_api + modelos_candidatos
+                )
         except Exception:
             pass
 
-        # Eliminar duplicados manteniendo el orden
         modelos_unicos = list(dict.fromkeys(modelos_candidatos))
 
-        ultimo_error = ""
         for mod in modelos_unicos:
             try:
                 model = genai.GenerativeModel(mod)
                 response = model.generate_content(
                     prompt_text,
-                    generation_config={"response_mime_type": "application/json"},
+                    generation_config={
+                        "response_mime_type": "application/json"
+                    },
                 )
                 if response and response.text:
                     return response.text
-            except Exception as e:
-                ultimo_error = str(e)
+            except Exception:
                 continue
 
-        raise Exception(f"Ningún modelo respondió. Último detalle: {ultimo_error}")
+        raise Exception("Error al conectar con la API de IA.")
 
-    # Cargar datos de mercado
+    # Cargar datos
     dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
+    pivots = calcular_pivot_points()
+    max_call_strike, max_put_strike, fecha_exp = (
+        obtener_open_interest_opciones()
+    )
 
-    # Métrica visual superior
+    # --- BLOQUE VISUAL SUPERIOR ---
     col1, col2 = st.columns(2)
     with col1:
         st.metric(
@@ -101,22 +156,50 @@ else:
             f"{dxy_var:.2f}%",
             delta_color="inverse",
         )
-        st.caption(f"RSI(14): **{dxy_rsi:.1f}** | Momentum: **{dxy_mom:.2f}**")
+        st.caption(f"RSI: **{dxy_rsi:.1f}** | Mom: **{dxy_mom:.2f}**")
     with col2:
         st.metric(
-            "US02Y (Bono 2 Años)",
+            "US02Y (Bono 2Y)",
             f"{us02_precio:.2f}%",
             f"{us02_var:.2f}%",
             delta_color="inverse",
         )
-        st.caption(f"RSI(14): **{us02_rsi:.1f}** | Momentum: **{us02_mom:.2f}**")
+        st.caption(f"RSI: **{us02_rsi:.1f}** | Mom: **{us02_mom:.2f}**")
 
-    # Obtener Noticias RSS
+    st.divider()
+
+    # --- BLOQUE PIVOTS Y OPEN INTEREST ---
+    st.subheader("🎯 Niveles Clave & Muros de Opciones")
+    p_col1, p_col2 = st.columns(2)
+
+    with p_col1:
+        st.markdown("**Pivot Points (Rango Esperado)**")
+        st.write(f"- **Resistencia 2 (R2):** `${pivots['R2']}`")
+        st.write(f"- **Resistencia 1 (R1):** `${pivots['R1']}`")
+        st.write(f"- **Punto Pivote (PP):** `${pivots['PP']}`")
+        st.write(f"- **Soporte 1 (S1):** `${pivots['S1']}`")
+        st.write(f"- **Soporte 2 (S2):** `${pivots['S2']}`")
+
+    with p_col2:
+        st.markdown("**Muros de Open Interest (Opciones GLD)**")
+        if max_call_strike and max_put_strike:
+            st.write(
+                f"- **Resistencia Clave (Max Call OI):** `~${max_call_strike:.0f}`"
+            )
+            st.write(
+                f"- **Soporte Clave (Max Put OI):** `~${max_put_strike:.0f}`"
+            )
+            st.caption(f"Vencimiento analizado: {fecha_exp}")
+        else:
+            st.info("No se pudieron cargar datos de opciones en este momento.")
+
+    st.divider()
+
+    # Noticias RSS
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
-    # Botón para forzar actualización manual
-    if st.button("🔄 Actualizar Análisis"):
+    if st.button("🔄 Actualizar Análisis Completo"):
         st.cache_data.clear()
         st.rerun()
 
@@ -133,41 +216,44 @@ else:
             f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
         )
 
+    # Prompt extendido con Pivots y Opciones
     prompt = f"""
-    Eres un analista macroeconómico y técnico senior de XAU/USD (Oro).
+    Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. DXY (Dólar): Cotización = {dxy_precio:.2f} | Var = {dxy_var:.2f}% | RSI(14) = {dxy_rsi:.1f} | Momentum = {dxy_mom:.2f}
-    2. US02Y (Bono 2 años): Rendimiento = {us02_precio:.2f}% | Var = {us02_var:.2f}% | RSI(14) = {us02_rsi:.1f} | Momentum = {us02_mom:.2f}
+    1. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
+    2. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
+    3. PIVOT POINTS DIARIOS: Rango S1 ({pivots['S1']}) a R1 ({pivots['R1']}) | Pivote Central: {pivots['PP']}
+    4. OPCIONES (OPEN INTEREST): Muro Call (Resistencia): ~${max_call_strike} | Muro Put (Soporte): ~${max_put_strike}
 
-    NOTICIAS MACRO RECIENTES (Últimas 24h):
+    NOTICIAS MACRO RECIENTES (24h):
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza actual del Oro combinando las noticias, la tendencia del Dólar y el Bono a 2 años con sus indicadores técnicos.
+    Evalúa la fuerza del Oro combinando las noticias, DXY, Bonos, el rango esperado según Pivots y las barreras de Opciones.
 
-    Responde en formato JSON válido con esta estructura:
+    Responde en formato JSON estrictamente válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista",
         "factores": {{
-            "Presión DXY (Dólar + RSI)": 80,
-            "Rendimiento Bono 2Y (Fed)": 70,
-            "Demanda Refugio Seguro": 85,
-            "Presión Inflacionaria": 60
+            "Presión DXY (Dólar)": 80,
+            "Rendimiento Bono 2Y": 70,
+            "Respeto a Pivot Points": 85,
+            "Barrera de Opciones (OI)": 65
         }},
         "noticias": [
             {{
                 "titulo": "Título traducido al español",
                 "sesgo": "Alcista 🟢",
-                "explicacion": "Explicación breve de 1 frase.",
+                "explicacion": "Explicación breve.",
                 "url": "URL original"
             }}
         ]
     }}
     """
 
-    with st.spinner("Procesando datos con IA..."):
+    with st.spinner("Analizando Macro, Niveles de Opciones e IA..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
 
@@ -184,8 +270,8 @@ else:
                     value=score,
                     title={
                         "text": (
-                            "<b>Sentimiento Combinado Macro + Técnico"
-                            f" XAU/USD</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"
+                            "<b>Sentimiento Global Macro + Técnico +"
+                            f" Opciones</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"
                         )
                     },
                     gauge={
@@ -202,7 +288,7 @@ else:
             fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("📊 Factores Clave (Macro & Técnico)")
+            st.subheader("📊 Desglose de Factores")
             for factor, valor in data["factores"].items():
                 st.write(f"**{factor}:** {valor}/100")
                 st.progress(valor / 100)
