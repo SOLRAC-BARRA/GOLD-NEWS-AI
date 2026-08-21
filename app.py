@@ -12,8 +12,7 @@ st.set_page_config(
 
 st.title("🥇 Radar Macro, Técnico & Opciones XAU/USD")
 st.caption(
-    "Noticias (24h) + Oro + DXY + Bonos US02Y + EMAs + Delta & Fuerza +"
-    " Pivot Points + Opciones (OI / Put-Call)"
+    "Noticias (24h)"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -441,7 +440,7 @@ else:
     with f_col2:
         render_barra_fuerza("💵 DXY (Dólar)", dxy_m)
     with f_col3:
-        render_barra_fuerza("🏛️ US02Y (Bono 2Y)", us02_m)
+        render_barra_fuerza("🏛️ US02Y ", us02_m)
 
     st.divider()
 
