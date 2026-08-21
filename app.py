@@ -12,7 +12,8 @@ st.set_page_config(
 
 st.title("🥇 Radar Macro, Técnico & Opciones XAU/USD")
 st.caption(
-    "Noticias (24h)"
+    "Noticias (24h) + Oro + DXY + Bonos US02Y + EMAs + Delta & Fuerza +"
+    " Pivot Points + Opciones (OI / Put-Call)"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -21,14 +22,14 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- 1. DATOS TÉCNICOS Y MERCADO (Con EMA 50 y EMA 200) ---
+    # --- 1. DATOS TÉCNICOS Y MERCADO EXPANDIDO ---
     @st.cache_data(ttl=300)
-    def obtener_datos_mercado(ticker_symbol):
+    def obtener_datos_mercado_completos(ticker_symbol):
         try:
             ticker = yf.Ticker(ticker_symbol)
-            # Se requiere mínimo 1 año para calcular EMA 200 con precisión
             df = ticker.history(period="1y")
             if len(df) >= 200:
+                # RSI & Momentum
                 delta = df["Close"].diff()
                 gain = delta.where(delta > 0, 0).rolling(14).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -36,13 +37,41 @@ else:
                 df["RSI"] = 100 - (100 / (1 + rs))
                 df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
-                # Cálculo de EMAs
+                # EMAs
                 df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
                 df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
+                # Volumen Relativo (vs Media 20)
+                df["Vol_MA20"] = df["Volume"].rolling(20).mean()
+                vol_actual = (
+                    float(df["Volume"].iloc[-1])
+                    if "Volume" in df and df["Volume"].iloc[-1] > 0
+                    else 0
+                )
+                vol_ma20 = (
+                    float(df["Vol_MA20"].iloc[-1])
+                    if "Vol_MA20" in df and df["Vol_MA20"].iloc[-1] > 0
+                    else 1
+                )
+                vol_ratio = (
+                    (vol_actual / vol_ma20) if vol_ma20 > 0 else 1.0
+                )
+
+                # Precios y Deltas
                 precio_actual = float(df["Close"].iloc[-1])
                 precio_previo = float(df["Close"].iloc[-2])
-                var_pct = ((precio_actual - precio_previo) / precio_previo) * 100
+                delta_usd = precio_actual - precio_previo
+                var_pct = (delta_usd / precio_previo) * 100
+
+                # Rango de Hoy vs ATR(14)
+                df["TR"] = (
+                    df[["High", "Close"]].max(axis=1)
+                    - df[["Low", "Close"]].min(axis=1)
+                )
+                df["ATR14"] = df["TR"].rolling(14).mean()
+                rango_hoy = float(df["High"].iloc[-1] - df["Low"].iloc[-1])
+                atr14 = float(df["ATR14"].iloc[-1])
+
                 rsi_val = float(df["RSI"].iloc[-1])
                 mom_val = float(df["Momentum"].iloc[-1])
 
@@ -52,17 +81,23 @@ else:
                 sobre_ema50 = precio_actual > ema50_val
                 sobre_ema200 = precio_actual > ema200_val
 
-                return (
-                    precio_actual,
-                    var_pct,
-                    rsi_val,
-                    mom_val,
-                    sobre_ema50,
-                    sobre_ema200,
-                )
+                metricas = {
+                    "precio": precio_actual,
+                    "delta_usd": delta_usd,
+                    "var_pct": var_pct,
+                    "rsi": rsi_val,
+                    "mom": mom_val,
+                    "sobre_ema50": sobre_ema50,
+                    "sobre_ema200": sobre_ema200,
+                    "vol_ratio": vol_ratio,
+                    "rango_hoy": rango_hoy,
+                    "atr14": atr14,
+                    "df": df.tail(120),  # Últimos 120 días para gráficos
+                }
+                return metricas
         except Exception:
             pass
-        return 0.0, 0.0, 50.0, 0.0, True, True
+        return None
 
     # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO ---
     @st.cache_data(ttl=300)
@@ -110,7 +145,7 @@ else:
 
         return niveles_lista, round(precio_ref, 2)
 
-    # --- 3. OPEN INTEREST EN OPCIONES ---
+    # --- 3. OPEN INTEREST & PUT/CALL RATIO EN OPCIONES ---
     @st.cache_data(ttl=1800)
     def obtener_open_interest_opciones(precio_oro_ref, rango_pct=0.02):
         try:
@@ -118,7 +153,7 @@ else:
             df_gld = gld.history(period="1d")
 
             if df_gld.empty:
-                return None, None, None
+                return None, None, None, None
 
             gld_price = float(df_gld["Close"].iloc[-1])
 
@@ -129,10 +164,19 @@ else:
 
             expiraciones = gld.options
             if not expiraciones:
-                return None, None, None
+                return None, None, None, None
 
             prox_exp = expiraciones[0]
             opt = gld.option_chain(prox_exp)
+
+            # Cálculo de Put/Call Ratio en Open Interest
+            total_call_oi = opt.calls["openInterest"].sum()
+            total_put_oi = opt.puts["openInterest"].sum()
+            pc_ratio = (
+                round(total_put_oi / total_call_oi, 2)
+                if total_call_oi > 0
+                else 1.0
+            )
 
             limite_sup = gld_price * (1 + rango_pct)
             limite_inf = gld_price * (1 - rango_pct)
@@ -157,9 +201,9 @@ else:
             strike_call_gold = round(max_call_row["strike"] * ratio, 0)
             strike_put_gold = round(max_put_row["strike"] * ratio, 0)
 
-            return strike_call_gold, strike_put_gold, prox_exp
+            return strike_call_gold, strike_put_gold, prox_exp, pc_ratio
         except Exception:
-            return None, None, None
+            return None, None, None, None
 
     # --- 4. CONSULTA A GEMINI ---
     @st.cache_data(ttl=1800)
@@ -204,15 +248,9 @@ else:
         raise Exception("Error al conectar con la API de IA.")
 
     # Cargar datos de mercado
-    oro_p, oro_v, oro_rsi, oro_mom, oro_e50, oro_e200 = obtener_datos_mercado(
-        "GC=F"
-    )
-    dxy_p, dxy_v, dxy_rsi, dxy_mom, dxy_e50, dxy_e200 = obtener_datos_mercado(
-        "DX-Y.NYB"
-    )
-    us02_p, us02_v, us02_rsi, us02_mom, us02_e50, us02_e200 = (
-        obtener_datos_mercado("2YY=F")
-    )
+    oro_m = obtener_datos_mercado_completos("GC=F")
+    dxy_m = obtener_datos_mercado_completos("DX-Y.NYB")
+    us02_m = obtener_datos_mercado_completos("2YY=F")
 
     niveles_pivots, precio_ref = calcular_pivot_points()
 
@@ -237,45 +275,112 @@ else:
         step=1,
     )
 
-    max_call_strike, max_put_strike, fecha_exp = (
+    max_call_strike, max_put_strike, fecha_exp, pc_ratio = (
         obtener_open_interest_opciones(
             precio_ref, rango_pct=sensibilidad_opc
         )
     )
 
-    # --- BLOQUE VISUAL SUPERIOR (3 COLUMNAS CON EMAs) ---
-    col1, col2, col3 = st.columns(3)
-
-    # Helper para renderizar formato de EMAs
+    # Helper formato EMAs
     def txt_ema(sobre_50, sobre_200):
         t50 = "🟢 >EMA50" if sobre_50 else "🔴 <EMA50"
         t200 = "🟢 >EMA200" if sobre_200 else "🔴 <EMA200"
         return f"{t50} | {t200}"
 
-    with col1:
-        st.metric("Oro (GC Futures)", f"${oro_p:.2f}", f"{oro_v:.2f}%")
-        st.caption(f"RSI: **{oro_rsi:.1f}** | Mom: **{oro_mom:.2f}**")
-        st.caption(txt_ema(oro_e50, oro_e200))
+    # --- BLOQUE VISUAL SUPERIOR (METRICAS) ---
+    col1, col2, col3 = st.columns(3)
 
-    with col2:
-        st.metric(
-            "DXY (Dólar)",
-            f"{dxy_p:.2f}",
-            f"{dxy_v:.2f}%",
-            delta_color="inverse",
-        )
-        st.caption(f"RSI: **{dxy_rsi:.1f}** | Mom: **{dxy_mom:.2f}**")
-        st.caption(txt_ema(dxy_e50, dxy_e200))
+    if oro_m:
+        with col1:
+            st.metric(
+                "Oro (GC Futures)",
+                f"${oro_m['precio']:.2f}",
+                f"{oro_m['delta_usd']:+.2f} ({oro_m['var_pct']:+.2f}%)",
+            )
+            st.caption(
+                f"RSI: **{oro_m['rsi']:.1f}** | Mom: **{oro_m['mom']:.2f}**"
+            )
+            st.caption(txt_ema(oro_m["sobre_ema50"], oro_m["sobre_ema200"]))
 
-    with col3:
-        st.metric(
-            "US02Y (Bono 2Y)",
-            f"{us02_p:.2f}%",
-            f"{us02_v:.2f}%",
-            delta_color="inverse",
+    if dxy_m:
+        with col2:
+            st.metric(
+                "DXY (Dólar)",
+                f"{dxy_m['precio']:.2f}",
+                f"{dxy_m['delta_usd']:+.2f} ({dxy_m['var_pct']:+.2f}%)",
+                delta_color="inverse",
+            )
+            st.caption(
+                f"RSI: **{dxy_m['rsi']:.1f}** | Mom: **{dxy_m['mom']:.2f}**"
+            )
+            st.caption(txt_ema(dxy_m["sobre_ema50"], dxy_m["sobre_ema200"]))
+
+    if us02_m:
+        with col3:
+            st.metric(
+                "US02Y (Bono 2Y)",
+                f"{us02_m['precio']:.2f}%",
+                f"{us02_m['delta_usd']:+.2f}% ({us02_m['var_pct']:+.2f}%)",
+                delta_color="inverse",
+            )
+            st.caption(
+                f"RSI: **{us02_m['rsi']:.1f}** | Mom: **{us02_m['mom']:.2f}**"
+            )
+            st.caption(txt_ema(us02_m["sobre_ema50"], us02_m["sobre_ema200"]))
+
+    st.divider()
+
+    # --- NUEVA SECCIÓN: MEDIDOR DE FUERZA, DELTA & VOLATILIDAD ---
+    st.subheader("⚡ Medidor de Fuerza, Delta Diaria & Volumen")
+
+    f_col1, f_col2, f_col3 = st.columns(3)
+
+    def render_barra_fuerza(titulo, m_data):
+        if not m_data:
+            return
+        st.markdown(f"**{titulo}**")
+
+        # Delta en $ y %
+        val_delta = m_data["var_pct"]
+        color_delta = "🟢 Alcista" if val_delta >= 0 else "🔴 Bajista"
+        st.write(
+            f"- **Delta Diario:** `{m_data['delta_usd']:+.2f}`"
+            f" ({val_delta:+.2f}%) {color_delta}"
         )
-        st.caption(f"RSI: **{us02_rsi:.1f}** | Mom: **{us02_mom:.2f}**")
-        st.caption(txt_ema(us02_e50, us02_e200))
+
+        # Volumen Relativo
+        v_rat = m_data["vol_ratio"]
+        txt_vol = (
+            "🔥 Alto Vol."
+            if v_rat > 1.2
+            else ("⚠️ Bajo Vol." if v_rat < 0.8 else "Normal")
+        )
+        st.write(
+            f"- **Volumen vs Media 20:** `{v_rat:.2f}x` media ({txt_vol})"
+        )
+
+        # Volatilidad Diaria (Rango vs ATR14)
+        rango = m_data["rango_hoy"]
+        atr = m_data["atr14"]
+        pct_atr = (rango / atr * 100) if atr > 0 else 100
+        st.write(
+            f"- **Recorrido Hoy:** `${rango:.2f}` ({pct_atr:.0f}% del ATR 14d)"
+        )
+
+        # Barra visual de fuerza (-100% a +100% escalado de RSI/Var)
+        fuerza_norm = max(
+            0.0, min(1.0, (m_data["rsi"]) / 100.0)
+        )  # Normalizado entre 0 y 1
+        st.progress(
+            fuerza_norm, text=f"Presión Compradora/Vendedora ({m_data['rsi']:.0f}/100)"
+        )
+
+    with f_col1:
+        render_barra_fuerza("🥇 Oro (GC)", oro_m)
+    with f_col2:
+        render_barra_fuerza("💵 DXY (Dólar)", dxy_m)
+    with f_col3:
+        render_barra_fuerza("🏛️ US02Y (Bono 2Y)", us02_m)
 
     st.divider()
 
@@ -329,13 +434,89 @@ else:
             st.write(
                 f"- **Soporte Táctico (Put):** `~${max_put_strike:.0f}`"
             )
+            if pc_ratio is not None:
+                bias_pc = (
+                    "🟢 Alcista (Acomulación Calls)"
+                    if pc_ratio < 0.8
+                    else ("🔴 Bajista / Cobertura Puts" if pc_ratio > 1.1 else "⚪ Neutral")
+                )
+                st.write(f"- **Put/Call OI Ratio:** `{pc_ratio}` ({bias_pc})")
             st.caption(f"Vencimiento analizado: {fecha_exp}")
         else:
             st.info("No se pudieron calcular muros OTM en este momento.")
 
     st.divider()
 
-    # Noticias RSS
+    # --- NUEVA SECCIÓN: GRÁFICOS INTERACTIVOS CON PESTAÑAS ---
+    st.subheader("📈 Gráficos de Tendencia & EMAs (50 y 200)")
+
+    tab_gold, tab_dxy, tab_us02 = st.tabs(
+        ["🥇 Oro (GC)", "💵 DXY (Dólar)", "🏛️ US02Y (Bono 2Y)"]
+    )
+
+    def crear_grafico_interactivo(ticker_name, data_m):
+        if not data_m or "df" not in data_m:
+            st.info("Gráfico no disponible.")
+            return
+
+        df_chart = data_m["df"]
+
+        fig_chart = go.Figure()
+
+        # Vela Japonesa o Línea de Cierre
+        fig_chart.add_trace(
+            go.Candlestick(
+                x=df_chart.index,
+                open=df_chart["Open"],
+                high=df_chart["High"],
+                low=df_chart["Low"],
+                close=df_chart["Close"],
+                name="Precio",
+            )
+        )
+
+        # EMA 50
+        fig_chart.add_trace(
+            go.Scatter(
+                x=df_chart.index,
+                y=df_chart["EMA50"],
+                line=dict(color="#FFD700", width=1.5),
+                name="EMA 50",
+            )
+        )
+
+        # EMA 200
+        fig_chart.add_trace(
+            go.Scatter(
+                x=df_chart.index,
+                y=df_chart["EMA200"],
+                line=dict(color="#FF4500", width=2),
+                name="EMA 200",
+            )
+        )
+
+        fig_chart.update_layout(
+            title=f"Estructura Técnica {ticker_name} (Diario)",
+            template="plotly_dark",
+            xaxis_rangeslider_visible=False,
+            height=380,
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+
+        st.plotly_chart(fig_chart, use_container_width=True)
+
+    with tab_gold:
+        crear_grafico_interactivo("Oro (GC Futures)", oro_m)
+
+    with tab_dxy:
+        crear_grafico_interactivo("Índice Dólar (DXY)", dxy_m)
+
+    with tab_us02:
+        crear_grafico_interactivo("Bono EEUU 2 Años (US02Y)", us02_m)
+
+    st.divider()
+
+    # --- CONSULTA A GEMINI Y NOTICIAS ---
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
@@ -360,27 +541,27 @@ else:
     Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. Oro (GC): ${oro_p:.2f} | RSI: {oro_rsi:.1f} | >EMA50: {oro_e50} | >EMA200: {oro_e200}
-    2. DXY (Dólar): {dxy_p:.2f} | RSI: {dxy_rsi:.1f} | >EMA50: {dxy_e50} | >EMA200: {dxy_e200}
-    3. US02Y (Bono 2Y): {us02_p:.2f}% | RSI: {us02_rsi:.1f} | >EMA50: {us02_e50} | >EMA200: {us02_e200}
+    1. Oro (GC): ${oro_m['precio']:.2f} | Delta: {oro_m['var_pct']:+.2f}% | Vol.Rel: {oro_m['vol_ratio']:.2f}x | RSI: {oro_m['rsi']:.1f} | >EMA50: {oro_m['sobre_ema50']} | >EMA200: {oro_m['sobre_ema200']}
+    2. DXY (Dólar): {dxy_m['precio']:.2f} | Delta: {dxy_m['var_pct']:+.2f}% | RSI: {dxy_m['rsi']:.1f} | >EMA50: {dxy_m['sobre_ema50']} | >EMA200: {dxy_m['sobre_ema200']}
+    3. US02Y (Bono 2Y): {us02_m['precio']:.2f}% | Delta: {us02_m['var_pct']:+.2f}% | RSI: {us02_m['rsi']:.1f} | >EMA50: {us02_m['sobre_ema50']} | >EMA200: {us02_m['sobre_ema200']}
     4. PIVOTS MOSTRADOS EN UI: {niveles_filtrados if 'niveles_filtrados' in locals() else niveles_pivots}
-    5. OPCIONES TÁCTICAS (OPEN INTEREST): Muro Resistencia Call: ~${max_call_strike} | Muro Soporte Put: ~${max_put_strike}
+    5. OPCIONES TÁCTICAS: Call Muro: ~${max_call_strike} | Put Muro: ~${max_put_strike} | Put/Call Ratio: {pc_ratio}
 
     NOTICIAS MACRO RECIENTES (24h):
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, su posición respecto a las EMAs de 50/200, la estructura de niveles y los muros de opciones cercanos.
+    Evalúa la fuerza del Oro combinando noticias, Delta/Volumen de DXY y Bonos, EMAs 50/200, Put/Call Ratio y Muros de Opciones.
 
     Responde en formato JSON estrictamente válido con esta estructura:
     {{
         "score_global": 75,
-        "estado": "Fortaleza Alcista",
+        "estado": "Fortaleza Alcista Institutional",
         "factores": {{
             "Presión DXY (Dólar)": 80,
             "Rendimiento Bono 2Y": 70,
-            "Alineación Estructura EMAs": 85,
-            "Barrera de Opciones Tácticas": 65
+            "Impulso y Delta del Oro": 85,
+            "Sesgo Opciones (Put/Call Ratio)": 75
         }},
         "noticias": [
             {{
@@ -393,7 +574,7 @@ else:
     }}
     """
 
-    with st.spinner("Analizando Macro, Niveles de Opciones e IA..."):
+    with st.spinner("Analizando Macro, Deltas, Gráficos e IA..."):
         try:
             raw_response = consultar_gemini(prompt, api_key)
 
@@ -410,7 +591,7 @@ else:
                     value=score,
                     title={
                         "text": (
-                            "<b>Sentimiento Global Macro + Técnico +"
+                            "<b>Sentimiento Global Macro + Delta +"
                             f" Opciones</b><br><span style='font-size:0.8em;color:gray'>{estado}</span>"
                         )
                     },
