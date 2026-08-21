@@ -48,12 +48,12 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- 2. CÁLCULO DE PIVOT POINTS (Futuros GC=F) ---
-    @st.cache_data(ttl=1800)
+    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO (Incluye R3/S3 para Breakouts) ---
+    @st.cache_data(ttl=600)
     def calcular_pivot_points():
         try:
             gold = yf.Ticker("GC=F")
-            df = gold.history(period="5d")
+            df = gold.history(period="7d", interval="1d").dropna()
             if len(df) < 2:
                 return {
                     "PP": 0,
@@ -61,19 +61,25 @@ else:
                     "S1": 0,
                     "R2": 0,
                     "S2": 0,
+                    "R3": 0,
+                    "S3": 0,
                     "Precio_Ref": 0,
                 }
 
-            high = float(df["High"].iloc[-2])
-            low = float(df["Low"].iloc[-2])
-            close = float(df["Close"].iloc[-2])
             precio_ref = float(df["Close"].iloc[-1])
 
-            pp = (high + low + close) / 3
+            prev_session = df.iloc[-2]
+            high = float(prev_session["High"])
+            low = float(prev_session["Low"])
+            close = float(prev_session["Close"])
+
+            pp = (high + low + close) / 3.0
             r1 = (2 * pp) - low
             s1 = (2 * pp) - high
             r2 = pp + (high - low)
             s2 = pp - (high - low)
+            r3 = high + 2 * (pp - low)
+            s3 = low - 2 * (high - pp)
 
             return {
                 "PP": round(pp, 2),
@@ -81,6 +87,8 @@ else:
                 "S1": round(s1, 2),
                 "R2": round(r2, 2),
                 "S2": round(s2, 2),
+                "R3": round(r3, 2),
+                "S3": round(s3, 2),
                 "Precio_Ref": round(precio_ref, 2),
             }
         except Exception:
@@ -90,11 +98,13 @@ else:
                 "S1": 0,
                 "R2": 0,
                 "S2": 0,
+                "R3": 0,
+                "S3": 0,
                 "Precio_Ref": 0,
             }
 
-    # --- 3. OPEN INTEREST EN OPCIONES (Muros OTM reales) ---
-    @st.cache_data(ttl=3600)
+    # --- 3. OPEN INTEREST EN OPCIONES (Corredor Estrecho ±4%) ---
+    @st.cache_data(ttl=1800)
     def obtener_open_interest_opciones(precio_oro_ref):
         try:
             gld = yf.Ticker("GLD")
@@ -103,8 +113,6 @@ else:
                 return None, None, None
 
             gld_price = float(df_gld["Close"].iloc[-1])
-
-            # Ratio de conversión dinámico
             ratio = precio_oro_ref / gld_price
 
             expiraciones = gld.options
@@ -114,12 +122,24 @@ else:
             prox_exp = expiraciones[0]
             opt = gld.option_chain(prox_exp)
 
-            # Filtrar estrictamente Out-Of-The-Money (OTM)
-            otm_calls = opt.calls[opt.calls["strike"] >= gld_price]
-            otm_puts = opt.puts[opt.puts["strike"] <= gld_price]
+            # Acotar la búsqueda a un rango cercano (+/- 4% del precio actual)
+            limite_sup = gld_price * 1.04
+            limite_inf = gld_price * 0.96
 
-            if otm_calls.empty or otm_puts.empty:
-                return None, None, None
+            otm_calls = opt.calls[
+                (opt.calls["strike"] >= gld_price)
+                & (opt.calls["strike"] <= limite_sup)
+            ]
+            otm_puts = opt.puts[
+                (opt.puts["strike"] <= gld_price)
+                & (opt.puts["strike"] >= limite_inf)
+            ]
+
+            # Respaldos en caso de que el corredor de 4% no tenga liquidez suficiente
+            if otm_calls.empty:
+                otm_calls = opt.calls[opt.calls["strike"] >= gld_price]
+            if otm_puts.empty:
+                otm_puts = opt.puts[opt.puts["strike"] <= gld_price]
 
             max_call_row = otm_calls.loc[otm_calls["openInterest"].idxmax()]
             max_put_row = otm_puts.loc[otm_puts["openInterest"].idxmax()]
@@ -203,7 +223,7 @@ else:
     st.divider()
 
     # --- BLOQUE PIVOTS Y OPEN INTEREST ---
-    st.subheader("🎯 Niveles Clave & Muros de Opciones")
+    st.subheader("🎯 Niveles Clave & Muros Tácticos")
     if pivots["Precio_Ref"] > 0:
         st.caption(
             f"Precio de referencia de Futuros (GC=F): **${pivots['Precio_Ref']}**"
@@ -212,21 +232,24 @@ else:
     p_col1, p_col2 = st.columns(2)
 
     with p_col1:
-        st.markdown("**Pivot Points (Rango Esperado)**")
+        st.markdown("**Pivot Points (Tácticos)**")
+        st.write(f"- **Resistencia Extrema (R3):** `${pivots['R3']}`")
         st.write(f"- **Resistencia 2 (R2):** `${pivots['R2']}`")
         st.write(f"- **Resistencia 1 (R1):** `${pivots['R1']}`")
         st.write(f"- **Punto Pivote (PP):** `${pivots['PP']}`")
         st.write(f"- **Soporte 1 (S1):** `${pivots['S1']}`")
         st.write(f"- **Soporte 2 (S2):** `${pivots['S2']}`")
+        st.write(f"- **Soporte Extremo (S3):** `${pivots['S3']}`")
 
     with p_col2:
-        st.markdown("**Muros de Open Interest (Opciones GLD)**")
+        st.markdown("**Muros OTM Cercanos (Max OI ±4%)**")
         if max_call_strike and max_put_strike:
             st.write(
-                f"- **Resistencia OTM (Max Call OI):** `~${max_call_strike:.0f}`"
+                "- **Resistencia Táctica (Call):**"
+                f" `~${max_call_strike:.0f}`"
             )
             st.write(
-                f"- **Soporte OTM (Max Put OI):** `~${max_put_strike:.0f}`"
+                f"- **Soporte Táctico (Put):** `~${max_put_strike:.0f}`"
             )
             st.caption(f"Vencimiento analizado: {fecha_exp}")
         else:
@@ -262,14 +285,14 @@ else:
     1. Precio Futuro Referencia (GC=F): ${pivots['Precio_Ref']}
     2. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
     3. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
-    4. PIVOT POINTS DIARIOS: Rango S1 ({pivots['S1']}) a R1 ({pivots['R1']}) | Pivote Central: {pivots['PP']}
-    5. OPCIONES (OPEN INTEREST OTM): Resistencia Call: ~${max_call_strike} | Soporte Put: ~${max_put_strike}
+    4. PIVOT POINTS DIARIOS: Pivote Central: {pivots['PP']} | Rango R1 ({pivots['R1']}) a R3 ({pivots['R3']})
+    5. OPCIONES TÁCTICAS (OPEN INTEREST): Muro Resistencia Call: ~${max_call_strike} | Muro Soporte Put: ~${max_put_strike}
 
     NOTICIAS MACRO RECIENTES (24h):
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza del Oro combinando las noticias, DXY, Bonos, el rango de Pivots y los muros de opciones OTM.
+    Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, comportamiento frente a los Pivots y cercanía a los muros de opciones cercanos.
 
     Responde en formato JSON estrictamente válido con esta estructura:
     {{
@@ -279,7 +302,7 @@ else:
             "Presión DXY (Dólar)": 80,
             "Rendimiento Bono 2Y": 70,
             "Respeto a Pivot Points": 85,
-            "Barrera de Opciones OTM": 65
+            "Barrera de Opciones Tácticas": 65
         }},
         "noticias": [
             {{
