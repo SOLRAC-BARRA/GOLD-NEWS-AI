@@ -12,7 +12,8 @@ st.set_page_config(
 
 st.title("🥇 Radar Macro, Técnico & Opciones XAU/USD")
 st.caption(
-    "Noticias (24h)"
+    "Noticias (24h) + Oro + DXY + Bonos US02Y + EMAs + Delta & Fuerza +"
+    " Pivot Points + Opciones (OI / Put-Call)"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -37,7 +38,6 @@ else:
                 data = tk.history(period="1y")
                 if not data.empty and len(data) >= 30:
                     df = data.dropna(subset=["Close"])
-                    # Filtro para evitar duplicados seguidos fuera de hora
                     df = df[df["Close"].diff() != 0] if len(df) > 50 else df
                     if not df.empty:
                         break
@@ -64,7 +64,7 @@ else:
             df["RSI"] = 100 - (100 / (1 + rs))
             df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
-            # Verificar si el instrumento cotiza volumen
+            # Verificar volumen
             has_volume = "Volume" in df and df["Volume"].sum() > 0
             if has_volume:
                 df["Vol_MA20"] = df["Volume"].rolling(20).mean()
@@ -183,7 +183,7 @@ else:
 
         return niveles_lista, round(precio_ref, 2)
 
-    # --- 3. OPEN INTEREST & PUT/CALL RATIO EN OPCIONES ---
+    # --- 3. OPEN INTEREST & PUT/CALL RATIO ---
     @st.cache_data(ttl=1800)
     def obtener_open_interest_opciones(precio_oro_ref, rango_pct=0.02):
         try:
@@ -325,15 +325,15 @@ else:
         t200 = "🟢 >EMA200" if sobre_200 else "🔴 <EMA200"
         return f"{t50} | {t200}"
 
-    # --- BLOQUE VISUAL SUPERIOR (delta_color="normal") ---
+    # --- BLOQUE VISUAL SUPERIOR (FORZADO NORMAL) ---
     col1, col2, col3 = st.columns(3)
 
     if oro_m:
         with col1:
             st.metric(
-                "Oro (GC Futures)",
-                f"${oro_m['precio']:.2f}",
-                f"{oro_m['delta_usd']:+.2f} ({oro_m['var_pct']:+.2f}%)",
+                label="Oro (GC Futures)",
+                value=f"${oro_m['precio']:.2f}",
+                delta=f"{oro_m['delta_usd']:+.2f} ({oro_m['var_pct']:+.2f}%)",
                 delta_color="normal",
             )
             st.caption(
@@ -344,9 +344,9 @@ else:
     if dxy_m:
         with col2:
             st.metric(
-                "DXY (Dólar)",
-                f"{dxy_m['precio']:.2f}",
-                f"{dxy_m['delta_usd']:+.2f} ({dxy_m['var_pct']:+.2f}%)",
+                label="DXY (Dólar)",
+                value=f"{dxy_m['precio']:.2f}",
+                delta=f"{dxy_m['delta_usd']:+.2f} ({dxy_m['var_pct']:+.2f}%)",
                 delta_color="normal",
             )
             st.caption(
@@ -357,9 +357,9 @@ else:
     if us02_m:
         with col3:
             st.metric(
-                "US02Y (Bono 2Y)",
-                f"{us02_m['precio']:.2f}%",
-                f"{us02_m['delta_usd']:+.2f}% ({us02_m['var_pct']:+.2f}%)",
+                label="US02Y (Bono 2Y)",
+                value=f"{us02_m['precio']:.2f}%",
+                delta=f"{us02_m['delta_usd']:+.2f}% ({us02_m['var_pct']:+.2f}%)",
                 delta_color="normal",
             )
             st.caption(
@@ -372,7 +372,7 @@ else:
 
     st.divider()
 
-    # --- SECCIÓN: MEDIDOR DE FUERZA, DELTA & BARRAS BICOLOR ---
+    # --- MEDIDOR DE FUERZA Y BARRAS BICOLOR ---
     st.subheader("⚡ Medidor de Fuerza, Delta Diaria & Volumen")
 
     f_col1, f_col2, f_col3 = st.columns(3)
@@ -383,7 +383,6 @@ else:
             return
         st.markdown(f"### {titulo}")
 
-        # Estado del Delta
         val_delta = m_data["var_pct"]
         if abs(val_delta) < 0.001:
             color_delta = "⚪ Neutral"
@@ -397,7 +396,6 @@ else:
             f" ({val_delta:+.2f}%) {color_delta}"
         )
 
-        # Volumen Relativo
         if m_data.get("has_volume", True):
             v_rat = m_data["vol_ratio"]
             txt_vol = (
@@ -411,7 +409,6 @@ else:
         else:
             st.write("- **Volumen:** `N/A (Rendimiento de Bono)`")
 
-        # Recorrido ATR
         rango = m_data["rango_hoy"]
         atr = m_data["atr14"]
         pct_atr = (rango / atr * 100) if atr > 0 else 100
@@ -419,7 +416,6 @@ else:
             f"- **Recorrido Hoy:** `${rango:.2f}` ({pct_atr:.0f}% del ATR 14d)"
         )
 
-        # BARRA BICOLOR COMPRADORA VS VENDEDORA (100% ANCHO)
         comp_pct = max(0.0, min(100.0, m_data["rsi"]))
         vend_pct = 100.0 - comp_pct
 
@@ -428,20 +424,20 @@ else:
             f" ({vend_pct:.0f}%)**"
         )
 
-        html_barra_bicolor = f"""
+        html_barra = f"""
         <div style="display: flex; background-color: #262730; border-radius: 6px; width: 100%; height: 16px; overflow: hidden; margin-top: 4px; margin-bottom: 12px; border: 1px solid #363945;">
-            <div style="background-color: #22c55e; width: {comp_pct:.1f}%; height: 100%; transition: width 0.5s;" title="Compradores: {comp_pct:.0f}%"></div>
-            <div style="background-color: #ef4444; width: {vend_pct:.1f}%; height: 100%; transition: width 0.5s;" title="Vendedores: {vend_pct:.0f}%"></div>
+            <div style="background-color: #22c55e; width: {comp_pct:.1f}%; height: 100%;"></div>
+            <div style="background-color: #ef4444; width: {vend_pct:.1f}%; height: 100%;"></div>
         </div>
         """
-        st.markdown(html_barra_bicolor, unsafe_allow_html=True)
+        st.markdown(html_barra, unsafe_allow_html=True)
 
     with f_col1:
         render_barra_fuerza("🥇 Oro (GC)", oro_m)
     with f_col2:
         render_barra_fuerza("💵 DXY (Dólar)", dxy_m)
     with f_col3:
-        render_barra_fuerza("🏛️ US02Y ", us02_m)
+        render_barra_fuerza("🏛️ US02Y (Bono 2Y)", us02_m)
 
     st.divider()
 
@@ -594,7 +590,6 @@ else:
             f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
         )
 
-    # Variables preparadas para la IA
     oro_p_str = f"${oro_m['precio']:.2f}" if oro_m else "N/A"
     oro_v_str = f"{oro_m['var_pct']:+.2f}%" if oro_m else "N/A"
     oro_r_str = f"{oro_m['rsi']:.1f}" if oro_m else "N/A"
@@ -623,7 +618,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza del Oro combinando noticias, Delta/Volumen de DXY y Bonos, EMAs 50/200, Put/Call Ratio y Muros de Opciones.
 
-    Responde en formato JSON estrictamente válido con esta estructura:
+    Responde en formato JSON strictly válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista Institutional",
