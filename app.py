@@ -48,15 +48,26 @@ else:
             pass
         return 0.0, 0.0, 50.0, 0.0
 
-    # --- 2. CÁLCULO DE PIVOT POINTS (Cierre diario anterior) ---
+    # --- 2. CÁLCULO DE PIVOT POINTS (Futuros GC=F) ---
     @st.cache_data(ttl=1800)
     def calcular_pivot_points():
         try:
             gold = yf.Ticker("GC=F")
             df = gold.history(period="5d")
+            if len(df) < 2:
+                return {
+                    "PP": 0,
+                    "R1": 0,
+                    "S1": 0,
+                    "R2": 0,
+                    "S2": 0,
+                    "Precio_Ref": 0,
+                }
+
             high = float(df["High"].iloc[-2])
             low = float(df["Low"].iloc[-2])
             close = float(df["Close"].iloc[-2])
+            precio_ref = float(df["Close"].iloc[-1])
 
             pp = (high + low + close) / 3
             r1 = (2 * pp) - low
@@ -70,15 +81,32 @@ else:
                 "S1": round(s1, 2),
                 "R2": round(r2, 2),
                 "S2": round(s2, 2),
+                "Precio_Ref": round(precio_ref, 2),
             }
         except Exception:
-            return {"PP": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+            return {
+                "PP": 0,
+                "R1": 0,
+                "S1": 0,
+                "R2": 0,
+                "S2": 0,
+                "Precio_Ref": 0,
+            }
 
-    # --- 3. OPEN INTEREST EN OPCIONES (Muro de Calls / Puts vía GLD) ---
+    # --- 3. OPEN INTEREST EN OPCIONES (Muros OTM reales) ---
     @st.cache_data(ttl=3600)
-    def obtener_open_interest_opciones():
+    def obtener_open_interest_opciones(precio_oro_ref):
         try:
             gld = yf.Ticker("GLD")
+            df_gld = gld.history(period="1d")
+            if df_gld.empty or precio_oro_ref <= 0:
+                return None, None, None
+
+            gld_price = float(df_gld["Close"].iloc[-1])
+
+            # Ratio de conversión dinámico
+            ratio = precio_oro_ref / gld_price
+
             expiraciones = gld.options
             if not expiraciones:
                 return None, None, None
@@ -86,12 +114,18 @@ else:
             prox_exp = expiraciones[0]
             opt = gld.option_chain(prox_exp)
 
-            max_call_row = opt.calls.loc[opt.calls["openInterest"].idxmax()]
-            max_put_row = opt.puts.loc[opt.puts["openInterest"].idxmax()]
+            # Filtrar estrictamente Out-Of-The-Money (OTM)
+            otm_calls = opt.calls[opt.calls["strike"] >= gld_price]
+            otm_puts = opt.puts[opt.puts["strike"] <= gld_price]
 
-            # Multiplicador ~10.8 para convertir el Strike de GLD al precio Spot aproximado del Oro
-            strike_call_gold = round(max_call_row["strike"] * 10.8, 0)
-            strike_put_gold = round(max_put_row["strike"] * 10.8, 0)
+            if otm_calls.empty or otm_puts.empty:
+                return None, None, None
+
+            max_call_row = otm_calls.loc[otm_calls["openInterest"].idxmax()]
+            max_put_row = otm_puts.loc[otm_puts["openInterest"].idxmax()]
+
+            strike_call_gold = round(max_call_row["strike"] * ratio, 0)
+            strike_put_gold = round(max_put_row["strike"] * ratio, 0)
 
             return strike_call_gold, strike_put_gold, prox_exp
         except Exception:
@@ -144,7 +178,7 @@ else:
     us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
     pivots = calcular_pivot_points()
     max_call_strike, max_put_strike, fecha_exp = (
-        obtener_open_interest_opciones()
+        obtener_open_interest_opciones(pivots["Precio_Ref"])
     )
 
     # --- BLOQUE VISUAL SUPERIOR ---
@@ -170,6 +204,11 @@ else:
 
     # --- BLOQUE PIVOTS Y OPEN INTEREST ---
     st.subheader("🎯 Niveles Clave & Muros de Opciones")
+    if pivots["Precio_Ref"] > 0:
+        st.caption(
+            f"Precio de referencia de Futuros (GC=F): **${pivots['Precio_Ref']}**"
+        )
+
     p_col1, p_col2 = st.columns(2)
 
     with p_col1:
@@ -184,14 +223,14 @@ else:
         st.markdown("**Muros de Open Interest (Opciones GLD)**")
         if max_call_strike and max_put_strike:
             st.write(
-                f"- **Resistencia Clave (Max Call OI):** `~${max_call_strike:.0f}`"
+                f"- **Resistencia OTM (Max Call OI):** `~${max_call_strike:.0f}`"
             )
             st.write(
-                f"- **Soporte Clave (Max Put OI):** `~${max_put_strike:.0f}`"
+                f"- **Soporte OTM (Max Put OI):** `~${max_put_strike:.0f}`"
             )
             st.caption(f"Vencimiento analizado: {fecha_exp}")
         else:
-            st.info("No se pudieron cargar datos de opciones en este momento.")
+            st.info("No se pudieron calcular muros OTM en este momento.")
 
     st.divider()
 
@@ -216,21 +255,21 @@ else:
             f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
         )
 
-    # Prompt extendido con Pivots y Opciones
     prompt = f"""
     Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
-    2. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
-    3. PIVOT POINTS DIARIOS: Rango S1 ({pivots['S1']}) a R1 ({pivots['R1']}) | Pivote Central: {pivots['PP']}
-    4. OPCIONES (OPEN INTEREST): Muro Call (Resistencia): ~${max_call_strike} | Muro Put (Soporte): ~${max_put_strike}
+    1. Precio Futuro Referencia (GC=F): ${pivots['Precio_Ref']}
+    2. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
+    3. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
+    4. PIVOT POINTS DIARIOS: Rango S1 ({pivots['S1']}) a R1 ({pivots['R1']}) | Pivote Central: {pivots['PP']}
+    5. OPCIONES (OPEN INTEREST OTM): Resistencia Call: ~${max_call_strike} | Soporte Put: ~${max_put_strike}
 
     NOTICIAS MACRO RECIENTES (24h):
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza del Oro combinando las noticias, DXY, Bonos, el rango esperado según Pivots y las barreras de Opciones.
+    Evalúa la fuerza del Oro combinando las noticias, DXY, Bonos, el rango de Pivots y los muros de opciones OTM.
 
     Responde en formato JSON estrictamente válido con esta estructura:
     {{
@@ -240,7 +279,7 @@ else:
             "Presión DXY (Dólar)": 80,
             "Rendimiento Bono 2Y": 70,
             "Respeto a Pivot Points": 85,
-            "Barrera de Opciones (OI)": 65
+            "Barrera de Opciones OTM": 65
         }},
         "noticias": [
             {{
