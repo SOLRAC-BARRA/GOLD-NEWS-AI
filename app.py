@@ -22,86 +22,121 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- 1. DATOS TÉCNICOS Y MERCADO EXPANDIDO ---
+    # --- 1. DATOS TÉCNICOS Y MERCADO (MULTI-TICKER DE RESPALDO) ---
     @st.cache_data(ttl=300)
-    def obtener_datos_mercado_completos(ticker_symbol):
+    def obtener_datos_mercado_completos(ticker_input):
+        tickers = (
+            [ticker_input]
+            if isinstance(ticker_input, str)
+            else ticker_input
+        )
+        df = None
+
+        for t in tickers:
+            try:
+                tk = yf.Ticker(t)
+                data = tk.history(period="1y")
+                if not data.empty and len(data) >= 30:
+                    df = data.dropna(subset=["Close"])
+                    # Filtro para evitar duplicados seguidos fuera de hora
+                    df = df[df["Close"].diff() != 0] if len(df) > 50 else df
+                    if not df.empty:
+                        break
+            except Exception:
+                continue
+
+        if df is None or len(df) < 20:
+            return None
+
         try:
-            ticker = yf.Ticker(ticker_symbol)
-            df = ticker.history(period="1y").dropna(subset=["Close"])
+            # EMAs 50 y 200 (adaptable si hay < 200 filas)
+            df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+            df["EMA200"] = (
+                df["Close"].ewm(span=200, adjust=False).mean()
+                if len(df) >= 200
+                else df["EMA50"]
+            )
 
-            # Eliminar filas duplicadas de cierre consecutivas para evitar falsos deltas 0.00 en fuera de horario
-            df = df[df["Close"].diff() != 0] if len(df) > 200 else df
+            # RSI & Momentum
+            delta = df["Close"].diff()
+            gain = delta.where(delta > 0, 0).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            df["RSI"] = 100 - (100 / (1 + rs))
+            df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
-            if len(df) >= 200:
-                # RSI & Momentum
-                delta = df["Close"].diff()
-                gain = delta.where(delta > 0, 0).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rs = gain / loss
-                df["RSI"] = 100 - (100 / (1 + rs))
-                df["Momentum"] = df["Close"] - df["Close"].shift(14)
-
-                # EMAs
-                df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-                df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-
-                # Volumen Relativo
+            # Verificar si el instrumento cotiza volumen (los bonos/índices a veces no tienen)
+            has_volume = "Volume" in df and df["Volume"].sum() > 0
+            if has_volume:
                 df["Vol_MA20"] = df["Volume"].rolling(20).mean()
-                vol_actual = (
-                    float(df["Volume"].iloc[-1])
-                    if "Volume" in df and df["Volume"].iloc[-1] > 0
-                    else 0
-                )
+                vol_actual = float(df["Volume"].iloc[-1])
                 vol_ma20 = (
                     float(df["Vol_MA20"].iloc[-1])
-                    if "Vol_MA20" in df and df["Vol_MA20"].iloc[-1] > 0
+                    if df["Vol_MA20"].iloc[-1] > 0
                     else 1
                 )
-                vol_ratio = (
-                    (vol_actual / vol_ma20) if vol_ma20 > 0 else 1.0
-                )
+                vol_ratio = vol_actual / vol_ma20 if vol_ma20 > 0 else 1.0
+            else:
+                vol_ratio = 1.0
 
-                # Precios y Deltas
-                precio_actual = float(df["Close"].iloc[-1])
-                precio_previo = float(df["Close"].iloc[-2])
-                delta_usd = precio_actual - precio_previo
-                var_pct = (delta_usd / precio_previo) * 100
+            # Precios y Deltas
+            precio_actual = float(df["Close"].iloc[-1])
+            precio_previo = float(
+                df["Close"].iloc[-2] if len(df) >= 2 else df["Close"].iloc[-1]
+            )
+            delta_usd = precio_actual - precio_previo
+            var_pct = (
+                (delta_usd / precio_previo) * 100
+                if precio_previo != 0
+                else 0.0
+            )
 
-                # ATR 14
-                df["TR"] = (
-                    df[["High", "Close"]].max(axis=1)
-                    - df[["Low", "Close"]].min(axis=1)
-                )
-                df["ATR14"] = df["TR"].rolling(14).mean()
-                rango_hoy = float(df["High"].iloc[-1] - df["Low"].iloc[-1])
-                atr14 = float(df["ATR14"].iloc[-1])
+            # ATR 14
+            df["TR"] = (
+                df[["High", "Close"]].max(axis=1)
+                - df[["Low", "Close"]].min(axis=1)
+            )
+            df["ATR14"] = df["TR"].rolling(14).mean()
+            rango_hoy = float(df["High"].iloc[-1] - df["Low"].iloc[-1])
+            atr14 = (
+                float(df["ATR14"].iloc[-1])
+                if not df["ATR14"].isna().iloc[-1]
+                else rango_hoy
+            )
 
-                rsi_val = float(df["RSI"].iloc[-1])
-                mom_val = float(df["Momentum"].iloc[-1])
+            rsi_val = (
+                float(df["RSI"].iloc[-1])
+                if not df["RSI"].isna().iloc[-1]
+                else 50.0
+            )
+            mom_val = (
+                float(df["Momentum"].iloc[-1])
+                if not df["Momentum"].isna().iloc[-1]
+                else 0.0
+            )
 
-                ema50_val = float(df["EMA50"].iloc[-1])
-                ema200_val = float(df["EMA200"].iloc[-1])
+            ema50_val = float(df["EMA50"].iloc[-1])
+            ema200_val = float(df["EMA200"].iloc[-1])
 
-                sobre_ema50 = precio_actual > ema50_val
-                sobre_ema200 = precio_actual > ema200_val
+            sobre_ema50 = precio_actual > ema50_val
+            sobre_ema200 = precio_actual > ema200_val
 
-                metricas = {
-                    "precio": precio_actual,
-                    "delta_usd": delta_usd,
-                    "var_pct": var_pct,
-                    "rsi": rsi_val,
-                    "mom": mom_val,
-                    "sobre_ema50": sobre_ema50,
-                    "sobre_ema200": sobre_ema200,
-                    "vol_ratio": vol_ratio,
-                    "rango_hoy": rango_hoy,
-                    "atr14": atr14,
-                    "df": df.tail(120),
-                }
-                return metricas
+            return {
+                "precio": precio_actual,
+                "delta_usd": delta_usd,
+                "var_pct": var_pct,
+                "rsi": rsi_val,
+                "mom": mom_val,
+                "sobre_ema50": sobre_ema50,
+                "sobre_ema200": sobre_ema200,
+                "vol_ratio": vol_ratio,
+                "has_volume": has_volume,
+                "rango_hoy": rango_hoy,
+                "atr14": atr14,
+                "df": df.tail(120),
+            }
         except Exception:
-            pass
-        return None
+            return None
 
     # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO ---
     @st.cache_data(ttl=300)
@@ -250,10 +285,12 @@ else:
 
         raise Exception("Error al conectar con la API de IA.")
 
-    # Cargar datos
-    oro_m = obtener_datos_mercado_completos("GC=F")
-    dxy_m = obtener_datos_mercado_completos("DX-Y.NYB")
-    us02_m = obtener_datos_mercado_completos("2YY=F")
+    # Cargar datos de mercado con tickers de respaldo
+    oro_m = obtener_datos_mercado_completos(["GC=F", "XAUUSD=X"])
+    dxy_m = obtener_datos_mercado_completos(["DX-Y.NYB", "UUP"])
+    us02_m = obtener_datos_mercado_completos(
+        ["2YY=F", "US02Y=X", "^USA2Y", "ZT=F"]
+    )
 
     niveles_pivots, precio_ref = calcular_pivot_points()
 
@@ -329,20 +366,24 @@ else:
                 f"RSI: **{us02_m['rsi']:.1f}** | Mom: **{us02_m['mom']:.2f}**"
             )
             st.caption(txt_ema(us02_m["sobre_ema50"], us02_m["sobre_ema200"]))
+    else:
+        with col3:
+            st.info("Bono US02Y no disponible en este momento.")
 
     st.divider()
 
-    # --- SECCIÓN CORREGIDA: MEDIDOR DE FUERZA, DELTA & BARRAS COLORIADAS ---
+    # --- SECCIÓN: MEDIDOR DE FUERZA, DELTA & BARRAS BICOLOR ---
     st.subheader("⚡ Medidor de Fuerza, Delta Diaria & Volumen")
 
     f_col1, f_col2, f_col3 = st.columns(3)
 
     def render_barra_fuerza(titulo, m_data):
         if not m_data:
+            st.info(f"{titulo}: Sin datos suficientes")
             return
         st.markdown(f"### {titulo}")
 
-        # Corrección del Estado del Delta
+        # Estado del Delta
         val_delta = m_data["var_pct"]
         if abs(val_delta) < 0.001:
             color_delta = "⚪ Neutral"
@@ -356,16 +397,19 @@ else:
             f" ({val_delta:+.2f}%) {color_delta}"
         )
 
-        # Volumen Relativo
-        v_rat = m_data["vol_ratio"]
-        txt_vol = (
-            "🔥 Alto Vol."
-            if v_rat > 1.2
-            else ("⚠️ Bajo Vol." if v_rat < 0.8 else "Normal")
-        )
-        st.write(
-            f"- **Volumen vs Media 20:** `{v_rat:.2f}x` media ({txt_vol})"
-        )
+        # Volumen Relativo (si el activo cotiza volumen)
+        if m_data.get("has_volume", True):
+            v_rat = m_data["vol_ratio"]
+            txt_vol = (
+                "🔥 Alto Vol."
+                if v_rat > 1.2
+                else ("⚠️ Bajo Vol." if v_rat < 0.8 else "Normal")
+            )
+            st.write(
+                f"- **Volumen vs Media 20:** `{v_rat:.2f}x` media ({txt_vol})"
+            )
+        else:
+            st.write("- **Volumen:** `N/A (Rendimiento de Bono)`")
 
         # Recorrido ATR
         rango = m_data["rango_hoy"]
@@ -375,24 +419,22 @@ else:
             f"- **Recorrido Hoy:** `${rango:.2f}` ({pct_atr:.0f}% del ATR 14d)"
         )
 
-        # Barra Dinámica Verde (Compradora) vs Roja (Vendedora)
-        rsi_val = m_data["rsi"]
-        if rsi_val >= 50:
-            color_hex = "#22c55e"  # Verde brillante
-            label_tipo = "Compradora 🟢"
-        else:
-            color_hex = "#ef4444"  # Rojo brillante
-            label_tipo = "Vendedora 🔴"
+        # BARRA BICOLOR COMPRADORA VS VENDEDORA (100% ANCHO)
+        comp_pct = max(0.0, min(100.0, m_data["rsi"]))
+        vend_pct = 100.0 - comp_pct
 
-        st.markdown(f"**Presión {label_tipo} ({rsi_val:.0f}/100)**")
+        st.markdown(
+            f"**🟢 Compradores ({comp_pct:.0f}%) vs 🔴 Vendedores"
+            f" ({vend_pct:.0f}%)**"
+        )
 
-        # HTML personalizado para forzar el color de la barra
-        html_barra = f"""
-        <div style="background-color: #262730; border-radius: 6px; width: 100%; height: 12px; margin-top: 4px; margin-bottom: 12px;">
-            <div style="background-color: {color_hex}; width: {min(max(rsi_val, 0), 100)}%; height: 100%; border-radius: 6px; transition: width 0.5s;"></div>
+        html_barra_bicolor = f"""
+        <div style="display: flex; background-color: #262730; border-radius: 6px; width: 100%; height: 16px; overflow: hidden; margin-top: 4px; margin-bottom: 12px; border: 1px solid #363945;">
+            <div style="background-color: #22c55e; width: {comp_pct:.1f}%; height: 100%; transition: width 0.5s;" title="Compradores: {comp_pct:.0f}%"></div>
+            <div style="background-color: #ef4444; width: {vend_pct:.1f}%; height: 100%; transition: width 0.5s;" title="Vendedores: {vend_pct:.0f}%"></div>
         </div>
         """
-        st.markdown(html_barra, unsafe_allow_html=True)
+        st.markdown(html_barra_bicolor, unsafe_allow_html=True)
 
     with f_col1:
         render_barra_fuerza("🥇 Oro (GC)", oro_m)
@@ -475,7 +517,7 @@ else:
 
     def crear_grafico_interactivo(ticker_name, data_m):
         if not data_m or "df" not in data_m:
-            st.info("Gráfico no disponible.")
+            st.info(f"Gráfico de {ticker_name} no disponible.")
             return
 
         df_chart = data_m["df"]
@@ -552,13 +594,26 @@ else:
             f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
         )
 
+    # Variables preparadas de forma segura para la IA
+    oro_p_str = f"${oro_m['precio']:.2f}" if oro_m else "N/A"
+    oro_v_str = f"{oro_m['var_pct']:+.2f}%" if oro_m else "N/A"
+    oro_r_str = f"{oro_m['rsi']:.1f}" if oro_m else "N/A"
+
+    dxy_p_str = f"{dxy_m['precio']:.2f}" if dxy_m else "N/A"
+    dxy_v_str = f"{dxy_m['var_pct']:+.2f}%" if dxy_m else "N/A"
+    dxy_r_str = f"{dxy_m['rsi']:.1f}" if dxy_m else "N/A"
+
+    us02_p_str = f"{us02_m['precio']:.2f}%" if us02_m else "N/A"
+    us02_v_str = f"{us02_m['var_pct']:+.2f}%" if us02_m else "N/A"
+    us02_r_str = f"{us02_m['rsi']:.1f}" if us02_m else "N/A"
+
     prompt = f"""
     Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. Oro (GC): ${oro_m['precio']:.2f} | Delta: {oro_m['var_pct']:+.2f}% | Vol.Rel: {oro_m['vol_ratio']:.2f}x | RSI: {oro_m['rsi']:.1f} | >EMA50: {oro_m['sobre_ema50']} | >EMA200: {oro_m['sobre_ema200']}
-    2. DXY (Dólar): {dxy_m['precio']:.2f} | Delta: {dxy_m['var_pct']:+.2f}% | RSI: {dxy_m['rsi']:.1f} | >EMA50: {dxy_m['sobre_ema50']} | >EMA200: {dxy_m['sobre_ema200']}
-    3. US02Y (Bono 2Y): {us02_m['precio']:.2f}% | Delta: {us02_m['var_pct']:+.2f}% | RSI: {us02_m['rsi']:.1f} | >EMA50: {us02_m['sobre_ema50']} | >EMA200: {us02_m['sobre_ema200']}
+    1. Oro (GC): {oro_p_str} | Delta: {oro_v_str} | RSI: {oro_r_str}
+    2. DXY (Dólar): {dxy_p_str} | Delta: {dxy_v_str} | RSI: {dxy_r_str}
+    3. US02Y (Bono 2Y): {us02_p_str} | Delta: {us02_v_str} | RSI: {us02_r_str}
     4. PIVOTS MOSTRADOS EN UI: {niveles_filtrados if 'niveles_filtrados' in locals() else niveles_pivots}
     5. OPCIONES TÁCTICAS: Call Muro: ~${max_call_strike} | Put Muro: ~${max_put_strike} | Put/Call Ratio: {pc_ratio}
 
@@ -568,7 +623,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza del Oro combinando noticias, Delta/Volumen de DXY y Bonos, EMAs 50/200, Put/Call Ratio y Muros de Opciones.
 
-    Responde en formato JSON strictly válido con esta estructura:
+    Responde en formato JSON estrictamente válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista Institutional",
