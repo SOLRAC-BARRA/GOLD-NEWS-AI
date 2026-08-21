@@ -48,7 +48,7 @@ else:
             return None
 
         try:
-            # EMAs 50 y 200 (adaptable si hay < 200 filas)
+            # EMAs 50 y 200
             df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
             df["EMA200"] = (
                 df["Close"].ewm(span=200, adjust=False).mean()
@@ -64,7 +64,7 @@ else:
             df["RSI"] = 100 - (100 / (1 + rs))
             df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
-            # Verificar si el instrumento cotiza volumen (los bonos/índices a veces no tienen)
+            # Verificar si el instrumento cotiza volumen
             has_volume = "Volume" in df and df["Volume"].sum() > 0
             if has_volume:
                 df["Vol_MA20"] = df["Volume"].rolling(20).mean()
@@ -325,7 +325,7 @@ else:
         t200 = "🟢 >EMA200" if sobre_200 else "🔴 <EMA200"
         return f"{t50} | {t200}"
 
-    # --- BLOQUE VISUAL SUPERIOR ---
+    # --- BLOQUE VISUAL SUPERIOR (delta_color="normal") ---
     col1, col2, col3 = st.columns(3)
 
     if oro_m:
@@ -334,6 +334,7 @@ else:
                 "Oro (GC Futures)",
                 f"${oro_m['precio']:.2f}",
                 f"{oro_m['delta_usd']:+.2f} ({oro_m['var_pct']:+.2f}%)",
+                delta_color="normal",
             )
             st.caption(
                 f"RSI: **{oro_m['rsi']:.1f}** | Mom: **{oro_m['mom']:.2f}**"
@@ -346,7 +347,7 @@ else:
                 "DXY (Dólar)",
                 f"{dxy_m['precio']:.2f}",
                 f"{dxy_m['delta_usd']:+.2f} ({dxy_m['var_pct']:+.2f}%)",
-                delta_color="inverse",
+                delta_color="normal",
             )
             st.caption(
                 f"RSI: **{dxy_m['rsi']:.1f}** | Mom: **{dxy_m['mom']:.2f}**"
@@ -359,7 +360,7 @@ else:
                 "US02Y (Bono 2Y)",
                 f"{us02_m['precio']:.2f}%",
                 f"{us02_m['delta_usd']:+.2f}% ({us02_m['var_pct']:+.2f}%)",
-                delta_color="inverse",
+                delta_color="normal",
             )
             st.caption(
                 f"RSI: **{us02_m['rsi']:.1f}** | Mom: **{us02_m['mom']:.2f}**"
@@ -396,7 +397,7 @@ else:
             f" ({val_delta:+.2f}%) {color_delta}"
         )
 
-        # Volumen Relativo (si el activo cotiza volumen)
+        # Volumen Relativo
         if m_data.get("has_volume", True):
             v_rat = m_data["vol_ratio"]
             txt_vol = (
@@ -593,7 +594,7 @@ else:
             f"\n{i}. Titular: {entry.title}\n   Enlace: {entry.link}\n"
         )
 
-    # Variables preparadas de forma segura para la IA
+    # Variables preparadas para la IA
     oro_p_str = f"${oro_m['precio']:.2f}" if oro_m else "N/A"
     oro_v_str = f"{oro_m['var_pct']:+.2f}%" if oro_m else "N/A"
     oro_r_str = f"{oro_m['rsi']:.1f}" if oro_m else "N/A"
