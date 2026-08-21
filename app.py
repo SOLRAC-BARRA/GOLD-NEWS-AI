@@ -7,12 +7,12 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="XAU/USD AI Radar Pro", page_icon="🥇", layout="centered"
+    page_title="XAU/USD AI Radar Pro", page_icon="🥇", layout="wide"
 )
 
 st.title("🥇 Radar Macro, Técnico & Opciones XAU/USD")
 st.caption(
-    "Noticias (24h) + DXY + Bonos US02Y + Pivot Points + Open Interest (Opciones)"
+    "Noticias (24h) + Oro + DXY + Bonos US02Y + EMAs + Pivot Points + Open Interest (Opciones)"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -21,13 +21,14 @@ if not api_key:
     st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
 else:
 
-    # --- 1. DATOS TÉCNICOS Y MERCADO ---
+    # --- 1. DATOS TÉCNICOS Y MERCADO (Con EMA 50 y EMA 200) ---
     @st.cache_data(ttl=300)
     def obtener_datos_mercado(ticker_symbol):
         try:
             ticker = yf.Ticker(ticker_symbol)
-            df = ticker.history(period="1mo")
-            if len(df) >= 15:
+            # Se requiere mínimo 1 año para calcular EMA 200 con precisión
+            df = ticker.history(period="1y")
+            if len(df) >= 200:
                 delta = df["Close"].diff()
                 gain = delta.where(delta > 0, 0).rolling(14).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -35,20 +36,35 @@ else:
                 df["RSI"] = 100 - (100 / (1 + rs))
                 df["Momentum"] = df["Close"] - df["Close"].shift(14)
 
+                # Cálculo de EMAs
+                df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+                df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+
                 precio_actual = float(df["Close"].iloc[-1])
                 precio_previo = float(df["Close"].iloc[-2])
-                var_pct = (
-                    (precio_actual - precio_previo) / precio_previo
-                ) * 100
+                var_pct = ((precio_actual - precio_previo) / precio_previo) * 100
                 rsi_val = float(df["RSI"].iloc[-1])
                 mom_val = float(df["Momentum"].iloc[-1])
 
-                return precio_actual, var_pct, rsi_val, mom_val
+                ema50_val = float(df["EMA50"].iloc[-1])
+                ema200_val = float(df["EMA200"].iloc[-1])
+
+                sobre_ema50 = precio_actual > ema50_val
+                sobre_ema200 = precio_actual > ema200_val
+
+                return (
+                    precio_actual,
+                    var_pct,
+                    rsi_val,
+                    mom_val,
+                    sobre_ema50,
+                    sobre_ema200,
+                )
         except Exception:
             pass
-        return 0.0, 0.0, 50.0, 0.0
+        return 0.0, 0.0, 50.0, 0.0, True, True
 
-    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO (Hasta Nivel 6) ---
+    # --- 2. CÁLCULO DE PIVOT POINTS COMPLETO ---
     @st.cache_data(ttl=300)
     def calcular_pivot_points():
         tickers_oro = ["GC=F", "XAUUSD=X"]
@@ -76,7 +92,6 @@ else:
         rango = high - low
         pp = (high + low + close) / 3.0
 
-        # Tupla de (Nombre, Valor, Nivel_Jerarquía)
         niveles_lista = [
             ("Extensión Fib 1.618 (R6)", round(close + (rango * 1.618), 2), 6),
             ("Extensión Fib 1.168 (R5)", round(close + (rango * 1.168), 2), 5),
@@ -146,7 +161,7 @@ else:
         except Exception:
             return None, None, None
 
-    # --- 4. CONSULTA DINÁMICA A GEMINI ---
+    # --- 4. CONSULTA A GEMINI ---
     @st.cache_data(ttl=1800)
     def consultar_gemini(prompt_text, key):
         genai.configure(api_key=key)
@@ -188,15 +203,21 @@ else:
 
         raise Exception("Error al conectar con la API de IA.")
 
-    # Cargar datos
-    dxy_precio, dxy_var, dxy_rsi, dxy_mom = obtener_datos_mercado("DX-Y.NYB")
-    us02_precio, us02_var, us02_rsi, us02_mom = obtener_datos_mercado("2YY=F")
+    # Cargar datos de mercado
+    oro_p, oro_v, oro_rsi, oro_mom, oro_e50, oro_e200 = obtener_datos_mercado(
+        "GC=F"
+    )
+    dxy_p, dxy_v, dxy_rsi, dxy_mom, dxy_e50, dxy_e200 = obtener_datos_mercado(
+        "DX-Y.NYB"
+    )
+    us02_p, us02_v, us02_rsi, us02_mom, us02_e50, us02_e200 = (
+        obtener_datos_mercado("2YY=F")
+    )
+
     niveles_pivots, precio_ref = calcular_pivot_points()
 
-    # --- BARRA LATERAL (CONTROLES PERSONALIZADOS) ---
+    # --- BARRA LATERAL ---
     st.sidebar.header("⚙️ Configuración del Radar")
-
-    # Slider 1: Sensibilidad Opciones (ahora de 0.5% a 5.0%)
     sensibilidad_opc = (
         st.sidebar.slider(
             "Sensibilidad Muros OTM (% spot)",
@@ -208,7 +229,6 @@ else:
         / 100.0
     )
 
-    # Slider 2: Profundidad de Niveles Pivote (de 3 a 6)
     max_niveles_pivots = st.sidebar.slider(
         "Niveles Pivote a mostrar (R/S)",
         min_value=3,
@@ -223,24 +243,39 @@ else:
         )
     )
 
-    # --- BLOQUE VISUAL SUPERIOR ---
-    col1, col2 = st.columns(2)
+    # --- BLOQUE VISUAL SUPERIOR (3 COLUMNAS CON EMAs) ---
+    col1, col2, col3 = st.columns(3)
+
+    # Helper para renderizar formato de EMAs
+    def txt_ema(sobre_50, sobre_200):
+        t50 = "🟢 >EMA50" if sobre_50 else "🔴 <EMA50"
+        t200 = "🟢 >EMA200" if sobre_200 else "🔴 <EMA200"
+        return f"{t50} | {t200}"
+
     with col1:
+        st.metric("Oro (GC Futures)", f"${oro_p:.2f}", f"{oro_v:.2f}%")
+        st.caption(f"RSI: **{oro_rsi:.1f}** | Mom: **{oro_mom:.2f}**")
+        st.caption(txt_ema(oro_e50, oro_e200))
+
+    with col2:
         st.metric(
             "DXY (Dólar)",
-            f"{dxy_precio:.2f}",
-            f"{dxy_var:.2f}%",
+            f"{dxy_p:.2f}",
+            f"{dxy_v:.2f}%",
             delta_color="inverse",
         )
         st.caption(f"RSI: **{dxy_rsi:.1f}** | Mom: **{dxy_mom:.2f}**")
-    with col2:
+        st.caption(txt_ema(dxy_e50, dxy_e200))
+
+    with col3:
         st.metric(
             "US02Y (Bono 2Y)",
-            f"{us02_precio:.2f}%",
-            f"{us02_var:.2f}%",
+            f"{us02_p:.2f}%",
+            f"{us02_v:.2f}%",
             delta_color="inverse",
         )
         st.caption(f"RSI: **{us02_rsi:.1f}** | Mom: **{us02_mom:.2f}**")
+        st.caption(txt_ema(us02_e50, us02_e200))
 
     st.divider()
 
@@ -252,13 +287,15 @@ else:
     p_col1, p_col2 = st.columns(2)
 
     with p_col1:
-        st.markdown(f"**Niveles Pivote (Hasta R{max_niveles_pivots}/S{max_niveles_pivots})**")
+        st.markdown(
+            f"**Niveles Pivote (Hasta R{max_niveles_pivots}/S{max_niveles_pivots})**"
+        )
         if niveles_pivots:
-            # Filtrar niveles según la cantidad seleccionada en la sidebar
             niveles_filtrados = [
-                item for item in niveles_pivots if item[2] <= max_niveles_pivots
+                item
+                for item in niveles_pivots
+                if item[2] <= max_niveles_pivots
             ]
-
             por_encima = [
                 item for item in niveles_filtrados if item[1] > precio_ref
             ]
@@ -323,9 +360,9 @@ else:
     Eres un analista macroeconómico, técnico y de flujo de opciones senior de XAU/USD (Oro).
 
     DATOS EN VIVO DEL MERCADO:
-    1. Precio Referencia Oro: ${precio_ref}
-    2. DXY (Dólar): {dxy_precio:.2f} | RSI: {dxy_rsi:.1f}
-    3. US02Y (Bono 2Y): {us02_precio:.2f}% | RSI: {us02_rsi:.1f}
+    1. Oro (GC): ${oro_p:.2f} | RSI: {oro_rsi:.1f} | >EMA50: {oro_e50} | >EMA200: {oro_e200}
+    2. DXY (Dólar): {dxy_p:.2f} | RSI: {dxy_rsi:.1f} | >EMA50: {dxy_e50} | >EMA200: {dxy_e200}
+    3. US02Y (Bono 2Y): {us02_p:.2f}% | RSI: {us02_rsi:.1f} | >EMA50: {us02_e50} | >EMA200: {us02_e200}
     4. PIVOTS MOSTRADOS EN UI: {niveles_filtrados if 'niveles_filtrados' in locals() else niveles_pivots}
     5. OPCIONES TÁCTICAS (OPEN INTEREST): Muro Resistencia Call: ~${max_call_strike} | Muro Soporte Put: ~${max_put_strike}
 
@@ -333,7 +370,7 @@ else:
     {texto_titulares}
 
     ANÁLISIS REQUERIDO:
-    Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, comportamiento frente a la estructura de niveles y los muros de opciones cercanos.
+    Evalúa la fuerza del Oro combinando noticias, DXY, Bonos, su posición respecto a las EMAs de 50/200, la estructura de niveles y los muros de opciones cercanos.
 
     Responde en formato JSON estrictamente válido con esta estructura:
     {{
@@ -342,7 +379,7 @@ else:
         "factores": {{
             "Presión DXY (Dólar)": 80,
             "Rendimiento Bono 2Y": 70,
-            "Respeto a Pivot Points": 85,
+            "Alineación Estructura EMAs": 85,
             "Barrera de Opciones Tácticas": 65
         }},
         "noticias": [
