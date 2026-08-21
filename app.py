@@ -27,7 +27,11 @@ else:
     def obtener_datos_mercado_completos(ticker_symbol):
         try:
             ticker = yf.Ticker(ticker_symbol)
-            df = ticker.history(period="1y")
+            df = ticker.history(period="1y").dropna(subset=["Close"])
+
+            # Eliminar filas duplicadas de cierre consecutivas para evitar falsos deltas 0.00 en fuera de horario
+            df = df[df["Close"].diff() != 0] if len(df) > 200 else df
+
             if len(df) >= 200:
                 # RSI & Momentum
                 delta = df["Close"].diff()
@@ -41,7 +45,7 @@ else:
                 df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
                 df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-                # Volumen Relativo (vs Media 20)
+                # Volumen Relativo
                 df["Vol_MA20"] = df["Volume"].rolling(20).mean()
                 vol_actual = (
                     float(df["Volume"].iloc[-1])
@@ -63,7 +67,7 @@ else:
                 delta_usd = precio_actual - precio_previo
                 var_pct = (delta_usd / precio_previo) * 100
 
-                # Rango de Hoy vs ATR(14)
+                # ATR 14
                 df["TR"] = (
                     df[["High", "Close"]].max(axis=1)
                     - df[["Low", "Close"]].min(axis=1)
@@ -92,7 +96,7 @@ else:
                     "vol_ratio": vol_ratio,
                     "rango_hoy": rango_hoy,
                     "atr14": atr14,
-                    "df": df.tail(120),  # Últimos 120 días para gráficos
+                    "df": df.tail(120),
                 }
                 return metricas
         except Exception:
@@ -169,7 +173,6 @@ else:
             prox_exp = expiraciones[0]
             opt = gld.option_chain(prox_exp)
 
-            # Cálculo de Put/Call Ratio en Open Interest
             total_call_oi = opt.calls["openInterest"].sum()
             total_put_oi = opt.puts["openInterest"].sum()
             pc_ratio = (
@@ -247,7 +250,7 @@ else:
 
         raise Exception("Error al conectar con la API de IA.")
 
-    # Cargar datos de mercado
+    # Cargar datos
     oro_m = obtener_datos_mercado_completos("GC=F")
     dxy_m = obtener_datos_mercado_completos("DX-Y.NYB")
     us02_m = obtener_datos_mercado_completos("2YY=F")
@@ -281,13 +284,12 @@ else:
         )
     )
 
-    # Helper formato EMAs
     def txt_ema(sobre_50, sobre_200):
         t50 = "🟢 >EMA50" if sobre_50 else "🔴 <EMA50"
         t200 = "🟢 >EMA200" if sobre_200 else "🔴 <EMA200"
         return f"{t50} | {t200}"
 
-    # --- BLOQUE VISUAL SUPERIOR (METRICAS) ---
+    # --- BLOQUE VISUAL SUPERIOR ---
     col1, col2, col3 = st.columns(3)
 
     if oro_m:
@@ -330,7 +332,7 @@ else:
 
     st.divider()
 
-    # --- NUEVA SECCIÓN: MEDIDOR DE FUERZA, DELTA & VOLATILIDAD ---
+    # --- SECCIÓN CORREGIDA: MEDIDOR DE FUERZA, DELTA & BARRAS COLORIADAS ---
     st.subheader("⚡ Medidor de Fuerza, Delta Diaria & Volumen")
 
     f_col1, f_col2, f_col3 = st.columns(3)
@@ -338,11 +340,17 @@ else:
     def render_barra_fuerza(titulo, m_data):
         if not m_data:
             return
-        st.markdown(f"**{titulo}**")
+        st.markdown(f"### {titulo}")
 
-        # Delta en $ y %
+        # Corrección del Estado del Delta
         val_delta = m_data["var_pct"]
-        color_delta = "🟢 Alcista" if val_delta >= 0 else "🔴 Bajista"
+        if abs(val_delta) < 0.001:
+            color_delta = "⚪ Neutral"
+        elif val_delta > 0:
+            color_delta = "🟢 Alcista"
+        else:
+            color_delta = "🔴 Bajista"
+
         st.write(
             f"- **Delta Diario:** `{m_data['delta_usd']:+.2f}`"
             f" ({val_delta:+.2f}%) {color_delta}"
@@ -359,7 +367,7 @@ else:
             f"- **Volumen vs Media 20:** `{v_rat:.2f}x` media ({txt_vol})"
         )
 
-        # Volatilidad Diaria (Rango vs ATR14)
+        # Recorrido ATR
         rango = m_data["rango_hoy"]
         atr = m_data["atr14"]
         pct_atr = (rango / atr * 100) if atr > 0 else 100
@@ -367,13 +375,24 @@ else:
             f"- **Recorrido Hoy:** `${rango:.2f}` ({pct_atr:.0f}% del ATR 14d)"
         )
 
-        # Barra visual de fuerza (-100% a +100% escalado de RSI/Var)
-        fuerza_norm = max(
-            0.0, min(1.0, (m_data["rsi"]) / 100.0)
-        )  # Normalizado entre 0 y 1
-        st.progress(
-            fuerza_norm, text=f"Presión Compradora/Vendedora ({m_data['rsi']:.0f}/100)"
-        )
+        # Barra Dinámica Verde (Compradora) vs Roja (Vendedora)
+        rsi_val = m_data["rsi"]
+        if rsi_val >= 50:
+            color_hex = "#22c55e"  # Verde brillante
+            label_tipo = "Compradora 🟢"
+        else:
+            color_hex = "#ef4444"  # Rojo brillante
+            label_tipo = "Vendedora 🔴"
+
+        st.markdown(f"**Presión {label_tipo} ({rsi_val:.0f}/100)**")
+
+        # HTML personalizado para forzar el color de la barra
+        html_barra = f"""
+        <div style="background-color: #262730; border-radius: 6px; width: 100%; height: 12px; margin-top: 4px; margin-bottom: 12px;">
+            <div style="background-color: {color_hex}; width: {min(max(rsi_val, 0), 100)}%; height: 100%; border-radius: 6px; transition: width 0.5s;"></div>
+        </div>
+        """
+        st.markdown(html_barra, unsafe_allow_html=True)
 
     with f_col1:
         render_barra_fuerza("🥇 Oro (GC)", oro_m)
@@ -384,7 +403,7 @@ else:
 
     st.divider()
 
-    # --- BLOQUE PIVOTS Y OPEN INTEREST ---
+    # --- PIVOTS Y OPEN INTEREST ---
     st.subheader("🎯 Niveles Clave & Muros Tácticos")
     if precio_ref > 0:
         st.caption(f"Precio Actual de Referencia: **${precio_ref}**")
@@ -436,7 +455,7 @@ else:
             )
             if pc_ratio is not None:
                 bias_pc = (
-                    "🟢 Alcista (Acomulación Calls)"
+                    "🟢 Alcista (Acumulación Calls)"
                     if pc_ratio < 0.8
                     else ("🔴 Bajista / Cobertura Puts" if pc_ratio > 1.1 else "⚪ Neutral")
                 )
@@ -447,7 +466,7 @@ else:
 
     st.divider()
 
-    # --- NUEVA SECCIÓN: GRÁFICOS INTERACTIVOS CON PESTAÑAS ---
+    # --- GRÁFICOS INTERACTIVOS ---
     st.subheader("📈 Gráficos de Tendencia & EMAs (50 y 200)")
 
     tab_gold, tab_dxy, tab_us02 = st.tabs(
@@ -460,10 +479,8 @@ else:
             return
 
         df_chart = data_m["df"]
-
         fig_chart = go.Figure()
 
-        # Vela Japonesa o Línea de Cierre
         fig_chart.add_trace(
             go.Candlestick(
                 x=df_chart.index,
@@ -475,7 +492,6 @@ else:
             )
         )
 
-        # EMA 50
         fig_chart.add_trace(
             go.Scatter(
                 x=df_chart.index,
@@ -485,7 +501,6 @@ else:
             )
         )
 
-        # EMA 200
         fig_chart.add_trace(
             go.Scatter(
                 x=df_chart.index,
@@ -516,7 +531,7 @@ else:
 
     st.divider()
 
-    # --- CONSULTA A GEMINI Y NOTICIAS ---
+    # --- NOTICIAS Y GEMINI IA ---
     rss_url = "https://news.google.com/rss/search?q=gold+price+XAUUSD+when:1d&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
 
@@ -553,7 +568,7 @@ else:
     ANÁLISIS REQUERIDO:
     Evalúa la fuerza del Oro combinando noticias, Delta/Volumen de DXY y Bonos, EMAs 50/200, Put/Call Ratio y Muros de Opciones.
 
-    Responde en formato JSON estrictamente válido con esta estructura:
+    Responde en formato JSON strictly válido con esta estructura:
     {{
         "score_global": 75,
         "estado": "Fortaleza Alcista Institutional",
