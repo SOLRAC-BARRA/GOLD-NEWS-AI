@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🥇 Radar Macro, Técnico & Opciones XAU/USD")
 st.caption(
-    "Noticias (24h) + Oro + DXY + Bonos US02Y + EMAs + Pivot Points + Open Interest (Opciones)"
+    "Noticias (24h)"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY")
